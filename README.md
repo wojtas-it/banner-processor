@@ -1,28 +1,28 @@
 # Banner Processor
 
-Narzędzie do przygotowania plików graficznych pod druk wielkoformatowy. Napisałem je podczas praktyk w Studio Delta (drukarnia wielkoformatowa) i jest tam teraz używane produkcyjnie.
+A tool for preparing graphics files for large-format printing. I wrote it during my internship at Studio Delta (a large-format print shop) and it's used there in production now.
 
-Przed każdym wydrukiem trzeba było ręcznie dodawać celowniki rejestracyjne i ramkę — to zajmowało kilka minut i łatwo było coś przekrzywić. Ten skrypt robi to automatycznie i zapisuje gotowy plik.
+Before every print run someone had to add registration marks and a border by hand, which took a few minutes and was easy to get slightly crooked. This script does it automatically and saves the finished file.
 
-## Co robi
+## What it does
 
-- Nakłada celowniki rejestracyjne (registration marks / paserki) — automatycznie dobiera ich liczbę i rozstaw do rozmiaru bannera (domyślnie co ~50 cm)
-- Dodaje białą ramkę na zagięcie/zawieszenie (domyślnie 3,6 cm)
-- Rysuje czarną obramówkę na krawędzi (domyślnie ~0,5 mm)
-- Zachowuje profil ICC i DPI — plik CMYK wychodzi jako CMYK z profilem
+- Adds registration marks and picks their number and spacing automatically based on the banner size (default around every 50 cm)
+- Adds a white border for folding/hanging (default 3.6 cm)
+- Draws a black outline along the edge (default around 0.5 mm)
+- Keeps the ICC profile and DPI, so a CMYK file comes out as CMYK with its profile
 
-![Główne okno aplikacji](screens/1_main.jpg)
+![Main window](screens/1_main.jpg)
 
-## Uruchomienie
+## Running it
 
-Wymagania: Python 3.8+, Pillow
+Requirements: Python 3.8+, Pillow
 
 ```bash
 pip install Pillow
 python main.py
 ```
 
-Bez argumentów odpala GUI. Z argumentem — CLI:
+Without arguments it launches the GUI. With an argument it runs as a CLI:
 
 ```bash
 python main.py baner.tif
@@ -33,45 +33,49 @@ python main.py --help
 
 ## GUI
 
-Po wybraniu pliku można kliknąć PODGLĄD żeby zobaczyć efekt przed zapisaniem. Ustawienia (rozstaw celowników, szerokość ramki itd.) zapisują się do `banner_processor_config.json` obok exe/skryptu.
+After picking a file you can click PREVIEW to see the result before saving. Settings (mark spacing, border width and so on) are saved to `banner_processor_config.json` next to the exe/script.
 
-![Podgląd z nałożonymi celownikami](screens/2_podglad.jpg)
+![Preview with registration marks applied](screens/2_podglad.jpg)
 
-## Obsługiwane formaty
+## Supported formats
 
-Wejście: TIFF, JPEG, PNG, PSD (wymaga Pillow z obsługą PSD)
-Wyjście: JPEG (jakość 100%) lub TIFF (kompresja LZW)
-Przestrzenie kolorów: RGB i CMYK
+Input: TIFF, JPEG, PNG, PSD (needs Pillow with PSD support)
+Output: JPEG (quality 100%) or TIFF (LZW compression)
+Color spaces: RGB and CMYK
 
-## Parametry
+## Parameters
 
-Wszystkie mają wartości domyślne dopasowane do workflow drukarni:
+All have defaults matched to the print shop workflow:
 
-| Parametr | Domyślnie | Co robi |
+| Parameter | Default | What it does |
 |----------|-----------|---------|
-| `marker_size` | 1.0 cm | rozmiar celownika (10x10 mm) |
-| `margin` | 2.0 cm | odległość celownika od krawędzi |
-| `target_spacing` | 50.0 cm | docelowy rozstaw celowników |
-| `min_spacing` | 45.0 cm | dolna granica rozstawu |
-| `max_spacing` | 55.0 cm | górna granica rozstawu |
-| `border` | 3.6 cm | biała ramka na zagięcie |
-| `line_width` | 0.05 cm | grubość czarnej obramówki |
-| `line_opacity` | 100% | nasycenie obramówki |
+| `marker_size` | 1.0 cm | mark size (10x10 mm) |
+| `margin` | 2.0 cm | distance from the mark to the edge |
+| `target_spacing` | 50.0 cm | target spacing between marks |
+| `min_spacing` | 45.0 cm | lower spacing limit |
+| `max_spacing` | 55.0 cm | upper spacing limit |
+| `border` | 3.6 cm | white border for folding |
+| `line_width` | 0.05 cm | black outline thickness |
+| `line_opacity` | 100% | outline opacity |
 
-## Jak działa rozmieszczanie celowników
+## How the marks are placed
 
-Zawsze są 4 w narożnikach. Dla dłuższych boków program dobiera liczbę pośrednich celowników tak, żeby rozstaw był jak najbliższy 50 cm i mieścił się w [45–55 cm]. Jeśli odstęp między skrajnymi jest mniejszy niż ~82 cm, pośrednie nie są dodawane.
+There are always 4 in the corners. For longer sides the program picks the number of intermediate marks so the spacing is as close to 50 cm as possible and stays within [45-55 cm]. If the gap between the outermost marks is smaller than about 82 cm, no intermediate marks are added.
 
-## Budowanie exe (Windows)
+## Building the exe (Windows)
 
 ```bash
 pip install pyinstaller
 pyinstaller BannerProcessor_v2.spec
 ```
 
-Gotowy plik ląduje w `dist/`.
+The finished file lands in `dist/`.
 
-## Znane ograniczenia
+## Known limitations
 
-- Podgląd CMYK w GUI jest konwertowany do RGB bez profilu ICC, więc kolory w podglądzie mogą się różnić od wydruku
-- Jeśli plik nie ma metadanych DPI, program zakłada 150 DPI i wyświetla ostrzeżenie — w takim przypadku trzeba podać wymiary ręcznie
+- The CMYK preview in the GUI is converted to RGB without the ICC profile, so the colors in the preview can differ from the print
+- If a file has no DPI metadata, the program assumes 150 DPI and shows a warning, in which case you have to enter the dimensions manually
+
+## More
+
+Portfolio: [wojtas.it](https://wojtas.it)

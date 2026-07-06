@@ -8,18 +8,15 @@ Wymagane: pip install Pillow
 
 import sys
 import os
-import math
 import json
 import argparse
 from PIL import Image, ImageDraw
 
 # ─── Domyślne parametry (cm) ────────────────────────────────────────────
 DEFAULT_MARKER_SIZE_CM = 1.0     # Rozmiar celownika (10x10mm)
-DEFAULT_MARGIN_CM = 2.0          # Odległość brzegu celownika od krawędzi
+DEFAULT_MARGIN_CM = 2.0          # Odległość osi celownika od krawędzi
 DEFAULT_TARGET_SPACING_CM = 50.0
-DEFAULT_MIN_SPACING_CM = 45.0
-DEFAULT_MAX_SPACING_CM = 55.0
-DEFAULT_BORDER_CM = 3.6          # Biała ramka na zagięcie
+DEFAULT_BORDER_CM = 3.6          # Biała ramka na zgrzew
 DEFAULT_LINE_WIDTH_CM = 0.05     # Grubość czarnej obramówki (~0.5mm)
 DEFAULT_LINE_OPACITY = 100       # Nasycenie obramówki (0-100%)
 DEFAULT_BORDER_ENABLED = True
@@ -63,35 +60,27 @@ def px_to_cm(px, dpi):
     return px * 2.54 / dpi
 
 
-def calculate_positions(length_cm, edge_offset_cm, target_spacing_cm, min_spacing_cm, max_spacing_cm):
+def calculate_positions(length_cm, edge_offset_cm, target_spacing_cm):
+    """
+    Zwraca pozycje osi celowników wzdłuż jednego boku (w cm, od krawędzi).
+    Punkty skrajne leżą w odległości edge_offset_cm od krawędzi (do osi).
+    Środkowe rozłożone są równo tak, aby odstęp między kolejnymi punktami
+    przebicia był jak najbliższy docelowemu. Wszystkie odstępy są równe.
+    """
     first_pos = edge_offset_cm
     last_pos = length_cm - edge_offset_cm
-    inner_distance = last_pos - first_pos
+    span = last_pos - first_pos
 
-    if inner_distance <= 0:
+    if span <= 0:
         return [length_cm / 2.0]
 
-    if inner_distance <= max_spacing_cm * 1.5:
+    if target_spacing_cm <= 0:
         return [first_pos, last_pos]
 
-    best_n = None
-    best_diff = float('inf')
-    n_min_possible = max(1, math.floor(inner_distance / max_spacing_cm))
-    n_max_possible = max(1, math.ceil(inner_distance / min_spacing_cm))
-
-    for n in range(n_min_possible, n_max_possible + 1):
-        spacing = inner_distance / n
-        if min_spacing_cm <= spacing <= max_spacing_cm:
-            diff = abs(spacing - target_spacing_cm)
-            if diff < best_diff:
-                best_diff = diff
-                best_n = n
-
-    if best_n is None:
-        best_n = max(1, round(inner_distance / target_spacing_cm))
-
-    actual_spacing = inner_distance / best_n
-    return [first_pos + i * actual_spacing for i in range(best_n + 1)]
+    # Liczba odstępów tak dobrana, by odstęp był najbliższy docelowemu.
+    n = max(1, round(span / target_spacing_cm))
+    spacing = span / n
+    return [first_pos + i * spacing for i in range(n + 1)]
 
 
 def get_white_color(mode):
@@ -173,8 +162,6 @@ def process_banner(
     marker_size_cm=DEFAULT_MARKER_SIZE_CM,
     margin_cm=DEFAULT_MARGIN_CM,
     target_spacing_cm=DEFAULT_TARGET_SPACING_CM,
-    min_spacing_cm=DEFAULT_MIN_SPACING_CM,
-    max_spacing_cm=DEFAULT_MAX_SPACING_CM,
     border_cm=DEFAULT_BORDER_CM,
     line_width_cm=DEFAULT_LINE_WIDTH_CM,
     line_opacity=DEFAULT_LINE_OPACITY,
@@ -248,8 +235,8 @@ def process_banner(
     draw = ImageDraw.Draw(img)
     marker_size_px = cm_to_px(marker_size_cm, avg_dpi)
 
-    marker_radius_cm = marker_size_cm / 2.0
-    edge_offset_cm = margin_cm + marker_radius_cm
+    # Wymiarowanie do OSI celownika: margin_cm to odległość osi od krawędzi.
+    edge_offset_cm = margin_cm
 
     corners = [
         (edge_offset_cm, edge_offset_cm),
@@ -258,17 +245,11 @@ def process_banner(
         (width_cm - edge_offset_cm, height_cm - edge_offset_cm),
     ]
 
-    h_inner = calculate_positions(width_cm, edge_offset_cm, target_spacing_cm, min_spacing_cm, max_spacing_cm)
-    v_inner = calculate_positions(height_cm, edge_offset_cm, target_spacing_cm, min_spacing_cm, max_spacing_cm)
+    h_positions = calculate_positions(width_cm, edge_offset_cm, target_spacing_cm)
+    v_positions = calculate_positions(height_cm, edge_offset_cm, target_spacing_cm)
 
-    if len(h_inner) >= 2:
-        h_inner = h_inner[1:-1]
-    else:
-        h_inner = []
-    if len(v_inner) >= 2:
-        v_inner = v_inner[1:-1]
-    else:
-        v_inner = []
+    h_inner = h_positions[1:-1] if len(h_positions) >= 2 else []
+    v_inner = v_positions[1:-1] if len(v_positions) >= 2 else []
 
     all_markers = []
     for cx, cy in corners:
@@ -288,14 +269,12 @@ def process_banner(
         draw_crosshair(draw, x, y, marker_size_px, mode)
 
     print(f"  Nałożono {len(all_markers)} celowników ({marker_size_cm*10:.0f}x{marker_size_cm*10:.0f} mm)")
-    if len(h_inner) > 0:
-        all_h = [edge_offset_cm] + sorted(h_inner) + [width_cm - edge_offset_cm]
-        spacings_h = [all_h[i+1] - all_h[i] for i in range(len(all_h)-1)]
-        print(f"  Rozstaw poziomy: co ~{sum(spacings_h)/len(spacings_h):.1f} cm")
-    if len(v_inner) > 0:
-        all_v = [edge_offset_cm] + sorted(v_inner) + [height_cm - edge_offset_cm]
-        spacings_v = [all_v[i+1] - all_v[i] for i in range(len(all_v)-1)]
-        print(f"  Rozstaw pionowy: co ~{sum(spacings_v)/len(spacings_v):.1f} cm")
+    h_spacing = (h_positions[1] - h_positions[0]) if len(h_positions) >= 2 else 0.0
+    v_spacing = (v_positions[1] - v_positions[0]) if len(v_positions) >= 2 else 0.0
+    print(f"  Poziomo: {len(h_positions)} oczek na bok, "
+          f"rozstaw co {h_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
+    print(f"  Pionowo: {len(v_positions)} oczek na bok, "
+          f"rozstaw co {v_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
 
     # ── KROK 2: Biała ramka ──
     white = get_white_color(mode)
@@ -430,8 +409,6 @@ def run_gui():
             self.marker_size = tk.DoubleVar(value=cfg.get('marker_size', DEFAULT_MARKER_SIZE_CM))
             self.margin = tk.DoubleVar(value=cfg.get('margin', DEFAULT_MARGIN_CM))
             self.target_spacing = tk.DoubleVar(value=cfg.get('target_spacing', DEFAULT_TARGET_SPACING_CM))
-            self.min_spacing = tk.DoubleVar(value=cfg.get('min_spacing', DEFAULT_MIN_SPACING_CM))
-            self.max_spacing = tk.DoubleVar(value=cfg.get('max_spacing', DEFAULT_MAX_SPACING_CM))
             self.border_cm = tk.DoubleVar(value=cfg.get('border', DEFAULT_BORDER_CM))
             self.line_width = tk.DoubleVar(value=cfg.get('line_width', DEFAULT_LINE_WIDTH_CM))
             self.line_opacity = tk.IntVar(value=cfg.get('line_opacity', DEFAULT_LINE_OPACITY))
@@ -447,8 +424,6 @@ def run_gui():
                 'marker_size': self.marker_size.get(),
                 'margin': self.margin.get(),
                 'target_spacing': self.target_spacing.get(),
-                'min_spacing': self.min_spacing.get(),
-                'max_spacing': self.max_spacing.get(),
                 'border': self.border_cm.get(),
                 'line_width': self.line_width.get(),
                 'line_opacity': self.line_opacity.get(),
@@ -537,10 +512,8 @@ def run_gui():
 
             params_markers = [
                 ("Rozmiar celownika (cm):", self.marker_size),
-                ("Odległość od krawędzi (cm):", self.margin),
+                ("Odległość osi od krawędzi (cm):", self.margin),
                 ("Docelowy rozstaw (cm):", self.target_spacing),
-                ("Min. rozstaw (cm):", self.min_spacing),
-                ("Max. rozstaw (cm):", self.max_spacing),
             ]
             for label_text, var in params_markers:
                 f = ttk.Frame(self.col_markers.content)
@@ -684,8 +657,6 @@ def run_gui():
                     marker_size_cm=self.marker_size.get(),
                     margin_cm=self.margin.get(),
                     target_spacing_cm=self.target_spacing.get(),
-                    min_spacing_cm=self.min_spacing.get(),
-                    max_spacing_cm=self.max_spacing.get(),
                     border_cm=self.border_cm.get(),
                     line_width_cm=self.line_width.get(),
                     line_opacity=self.line_opacity.get(),
@@ -710,8 +681,8 @@ def run_gui():
                 self.preview_label.config(image=self.preview_image, text='')
 
                 lines = log_text.split('\n')
-                status = [l for l in lines if 'Nałożono' in l or 'Rozstaw' in l]
-                self.status_label.config(text=' | '.join(s.strip() for s in status[:2]) if status else "Gotowe")
+                status = [l for l in lines if 'Nałożono' in l or 'Poziomo' in l or 'Pionowo' in l]
+                self.status_label.config(text=' | '.join(s.strip() for s in status[:3]) if status else "Gotowe")
 
             except Exception as e:
                 messagebox.showerror("Błąd", str(e))
@@ -778,8 +749,6 @@ def main():
     parser.add_argument('--marker-size', type=float, default=DEFAULT_MARKER_SIZE_CM)
     parser.add_argument('--margin', type=float, default=DEFAULT_MARGIN_CM)
     parser.add_argument('--spacing', type=float, default=DEFAULT_TARGET_SPACING_CM)
-    parser.add_argument('--min-spacing', type=float, default=DEFAULT_MIN_SPACING_CM)
-    parser.add_argument('--max-spacing', type=float, default=DEFAULT_MAX_SPACING_CM)
     parser.add_argument('--border', type=float, default=DEFAULT_BORDER_CM)
     parser.add_argument('--line-width', type=float, default=DEFAULT_LINE_WIDTH_CM)
     parser.add_argument('--line-opacity', type=int, default=DEFAULT_LINE_OPACITY)
@@ -803,8 +772,6 @@ def main():
             marker_size_cm=args.marker_size,
             margin_cm=args.margin,
             target_spacing_cm=args.spacing,
-            min_spacing_cm=args.min_spacing,
-            max_spacing_cm=args.max_spacing,
             border_cm=args.border,
             line_width_cm=args.line_width,
             line_opacity=args.line_opacity,

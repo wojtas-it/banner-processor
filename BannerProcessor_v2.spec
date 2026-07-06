@@ -2,15 +2,25 @@
 
 from PyInstaller.utils.hooks import collect_all
 
-# Dołącz bibliotekę PDF (binarka pdfium + dane) do pakietu .exe
-pdfium_datas, pdfium_binaries, pdfium_hiddenimports = collect_all('pypdfium2')
+
+def _collect(pkg):
+    # Zwraca puste listy, jeśli pakiet nie jest zainstalowany (build nie pada).
+    try:
+        return collect_all(pkg)
+    except Exception:
+        return ([], [], [])
+
+
+# PDF (pdfium) wymagany; drag & drop (tkinterdnd2) opcjonalny.
+pdfium_datas, pdfium_binaries, pdfium_hidden = _collect('pypdfium2')
+dnd_datas, dnd_binaries, dnd_hidden = _collect('tkinterdnd2')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=pdfium_binaries,
-    datas=pdfium_datas,
-    hiddenimports=pdfium_hiddenimports,
+    binaries=pdfium_binaries + dnd_binaries,
+    datas=pdfium_datas + dnd_datas,
+    hiddenimports=pdfium_hidden + dnd_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

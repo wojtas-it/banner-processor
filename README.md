@@ -16,10 +16,11 @@ Before every print run someone had to add registration marks and a border by han
 
 ## Running it
 
-Requirements: Python 3.8+, Pillow, pypdfium2 (for PDF support)
+Requirements: Python 3.8+, Pillow, pypdfium2 (for PDF support). Optional: tkinterdnd2 for drag-and-drop.
 
 ```bash
 pip install Pillow pypdfium2
+pip install tkinterdnd2   # optional, enables dragging files onto the window
 python main.py
 ```
 
@@ -37,7 +38,7 @@ python main.py --help
 
 The window is laid out like an editor: settings on the left, a large preview on the right. The preview updates live as you change any setting (no button to click). You can zoom with the mouse wheel and pan by dragging, or click "Dopasuj" to fit.
 
-Pick a file (or several at once) and the print dimensions fill in automatically. Buttons +/- next to the horizontal and vertical readouts let you add or remove eyelets by hand; the spacing recalculates to stay even. Settings (mark spacing, border width and so on) are saved to `banner_processor_config.json` next to the exe/script.
+Pick a file (or several at once, or drag them onto the window) and the print dimensions fill in automatically. Buttons +/- next to the horizontal and vertical readouts let you add or remove eyelets by hand; the spacing recalculates to stay even. Warnings show up for low resolution or a margin so large the marks would overlap. Shortcuts: Ctrl+O open, Ctrl+S save, Ctrl+0 fit, Ctrl +/- zoom. Settings (mark spacing, border width and so on) are saved to `banner_processor_config.json` next to the exe/script.
 
 ![Preview with registration marks applied](screens/2_podglad.jpg)
 

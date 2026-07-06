@@ -534,11 +534,15 @@ def probe_size_cm(input_path, pdf_dpi=DEFAULT_PDF_DPI,
 
 
 def process_batch(input_paths, output_dir=None, output_ext='.jpg',
-                  params=None, pdf_dpi=DEFAULT_PDF_DPI, tolerance_cm=0.2):
+                  params=None, pdf_dpi=DEFAULT_PDF_DPI, tolerance_cm=0.2,
+                  progress=None):
     """
     Przetwarza kilka plików tymi samymi ustawieniami. Wszystkie muszą mieć
     jednakowe wymiary wydruku – jeśli któryś się różni, zgłasza błąd i nie
     przetwarza niczego.
+
+    progress – opcjonalny callback(i, total, nazwa_pliku) wołany przed każdym
+    plikiem (do paska postępu w GUI).
     """
     params = dict(params or {})
     target_w = params.get('target_width_cm')
@@ -558,7 +562,10 @@ def process_batch(input_paths, output_dir=None, output_ext='.jpg',
             "Pliki mają różne wymiary wydruku (wymagane jednakowe):\n" + listing)
 
     outputs = []
-    for p in input_paths:
+    total = len(input_paths)
+    for i, p in enumerate(input_paths, 1):
+        if progress:
+            progress(i, total, os.path.basename(p))
         base = os.path.splitext(os.path.basename(p))[0]
         out_dir = output_dir or os.path.dirname(p)
         out = os.path.join(out_dir, f"{base}_processed{output_ext}")
@@ -577,6 +584,15 @@ def run_gui():
     except ImportError:
         print("Brak modułu tkinter. Użyj wiersza poleceń.")
         sys.exit(1)
+
+    # Drag & drop jest opcjonalny – jeśli biblioteki brak, program działa bez niego.
+    try:
+        from tkinterdnd2 import TkinterDnD, DND_FILES
+        DND_AVAILABLE = True
+    except Exception:
+        TkinterDnD = None
+        DND_FILES = None
+        DND_AVAILABLE = False
 
     WORK_MAX_PX = 1400   # maksymalny dłuższy bok kopii roboczej podglądu
 
@@ -608,13 +624,21 @@ def run_gui():
         def __init__(self, root):
             self.root = root
             self.root.title("Banner Processor - StudioDelta.pl")
-            try:
-                self.root.state('zoomed')
-            except tk.TclError:
-                self.root.geometry("1280x820")
+
+            cfg = load_config()
             self.root.minsize(1040, 640)
+            geom = cfg.get('window_geometry')
+            if geom:
+                self.root.geometry(geom)
+            else:
+                try:
+                    self.root.state('zoomed')
+                except tk.TclError:
+                    self.root.geometry("1280x820")
 
             # ── stan ──
+            self.last_dir = cfg.get('last_dir') or None
+            self.last_out_dir = None
             self.files = []
             self.current_index = 0
             self.source_img = None
@@ -638,8 +662,6 @@ def run_gui():
             self.offset = [0, 0]
             self._drag = None
 
-            cfg = load_config()
-
             # pola numeryczne jako StringVar – akceptują przecinek
             self.marker_size = tk.StringVar(value=self._fmt(cfg.get('marker_size', DEFAULT_MARKER_SIZE_CM)))
             self.margin = tk.StringVar(value=self._fmt(cfg.get('margin', DEFAULT_MARGIN_CM)))
@@ -662,18 +684,23 @@ def run_gui():
             self.target_height = tk.StringVar(value="")
             self.lock_aspect = tk.BooleanVar(value=True)
             self.pdf_dpi = tk.StringVar(value=str(cfg.get('pdf_dpi', DEFAULT_PDF_DPI)))
-            self.out_format = tk.StringVar(value='jpg')
+            self.out_format = tk.StringVar(value=cfg.get('out_format', 'jpg'))
 
             # etykiety dynamiczne
             self.file_info = tk.StringVar(value="Nie wczytano pliku")
+            self.warn = tk.StringVar(value="")
             self.h_count_lbl = tk.StringVar(value="—")
             self.v_count_lbl = tk.StringVar(value="—")
             self.zoom_lbl = tk.StringVar(value="100%")
-            self.status = tk.StringVar(value="Wczytaj plik, aby zacząć.")
+            self.status = tk.StringVar(value="Wczytaj plik, aby zacząć. "
+                                             + ("Możesz też przeciągnąć pliki do okna." if DND_AVAILABLE else ""))
             self._suppress_dim_trace = False
 
             self.build_ui()
             self._bind_live_updates()
+            self._bind_shortcuts()
+            self._enable_dnd()
+            self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # ── pomocnicze ──
         @staticmethod
@@ -709,10 +736,68 @@ def run_gui():
 
         def save_settings(self):
             try:
-                path = save_config(self.get_current_settings())
+                cfg = load_config()
+                cfg.update(self.get_current_settings())
+                path = save_config(cfg)
                 messagebox.showinfo("Zapisano", f"Ustawienia zapisane.\n{path}")
             except Exception as e:
                 messagebox.showerror("Błąd", f"Nie udało się zapisać:\n{e}")
+
+        def _bind_shortcuts(self):
+            self.root.bind('<Control-o>', lambda e: self.browse_files())
+            self.root.bind('<Control-O>', lambda e: self.browse_files())
+            self.root.bind('<Control-s>', lambda e: self.save_single())
+            self.root.bind('<Control-S>', lambda e: self.save_single())
+            self.root.bind('<Control-0>', lambda e: self.fit_view())
+            self.root.bind('<Control-equal>', lambda e: self.zoom_by(1.25))
+            self.root.bind('<Control-plus>', lambda e: self.zoom_by(1.25))
+            self.root.bind('<Control-minus>', lambda e: self.zoom_by(1 / 1.25))
+
+        def _enable_dnd(self):
+            if not DND_AVAILABLE:
+                return
+            try:
+                for w in (self.canvas, self.root):
+                    w.drop_target_register(DND_FILES)
+                    w.dnd_bind('<<Drop>>', self.on_drop)
+            except Exception:
+                pass
+
+        def on_drop(self, event):
+            self._load_paths(self._parse_drop(event.data))
+
+        @staticmethod
+        def _parse_drop(data):
+            import re
+            parts = re.findall(r'\{[^{}]*\}|\S+', data)
+            return [p.strip('{}') for p in parts]
+
+        def on_close(self):
+            try:
+                cfg = load_config()
+                try:
+                    zoomed = self.root.state() == 'zoomed'
+                except tk.TclError:
+                    zoomed = False
+                if zoomed:
+                    cfg.pop('window_geometry', None)
+                else:
+                    cfg['window_geometry'] = self.root.geometry()
+                if self.last_dir:
+                    cfg['last_dir'] = self.last_dir
+                cfg['out_format'] = self.out_format.get()
+                save_config(cfg)
+            except Exception:
+                pass
+            self.root.destroy()
+
+        def open_result_folder(self):
+            folder = self.last_out_dir
+            if folder and os.path.isdir(folder):
+                try:
+                    os.startfile(folder)
+                except Exception as e:
+                    messagebox.showerror("Błąd", f"Nie udało się otworzyć folderu:\n{e}")
 
         # ── budowa interfejsu ──
         def build_ui(self):
@@ -728,6 +813,9 @@ def run_gui():
             ttk.Combobox(top, textvariable=self.out_format, state='readonly', width=6,
                          values=['jpg', 'tif', 'png', 'pdf']).pack(side='left')
 
+            self.open_folder_btn = ttk.Button(top, text="Otwórz folder wyniku",
+                                              command=self.open_result_folder, state='disabled')
+            self.open_folder_btn.pack(side='right', padx=(8, 0))
             self.batch_btn = ttk.Button(top, text="Zapisz wszystkie (wsad)…",
                                         command=self.save_batch, state='disabled')
             self.batch_btn.pack(side='right')
@@ -773,6 +861,8 @@ def run_gui():
 
             ttk.Label(inner, textvariable=self.file_info, font=('Consolas', 8),
                       foreground='gray', wraplength=300, justify='left').pack(anchor='w', **pad)
+            ttk.Label(inner, textvariable=self.warn, font=('Segoe UI', 8, 'bold'),
+                      foreground='#c0392b', wraplength=300, justify='left').pack(anchor='w', **pad)
 
             # Wymiary
             fs = ttk.LabelFrame(inner, text="Wymiary wydruku (bez ramki)", padding=8)
@@ -876,6 +966,7 @@ def run_gui():
         def browse_files(self):
             paths = filedialog.askopenfilenames(
                 title="Wybierz plik(i) bannera",
+                initialdir=self.last_dir or '',
                 filetypes=[
                     ("Pliki graficzne", "*.tif *.tiff *.psd *.png *.jpg *.jpeg *.bmp *.pdf"),
                     ("PDF", "*.pdf"),
@@ -883,6 +974,11 @@ def run_gui():
                     ("JPEG", "*.jpg *.jpeg"),
                     ("Wszystkie", "*.*"),
                 ])
+            if paths:
+                self._load_paths(paths)
+
+        def _load_paths(self, paths):
+            paths = [p for p in paths if os.path.isfile(p)]
             if not paths:
                 return
             self.files = list(paths)
@@ -890,6 +986,7 @@ def run_gui():
             self.file_combo['values'] = [os.path.basename(p) for p in self.files]
             self.file_combo.current(0)
             self.batch_btn.config(state='normal' if len(self.files) > 1 else 'disabled')
+            self.last_dir = os.path.dirname(paths[0]) or self.last_dir
             self.load_current()
 
         def on_file_selected(self, event):
@@ -908,7 +1005,9 @@ def run_gui():
 
             self._loading = True
             self.source_img = img
+            self._src_px = img.size
             dx, dy, found = read_dpi(img)
+            self._dpi_found = found
             self.orig_dpi = (dx, dy)
             avg = (dx + dy) / 2.0
             self.src_w_cm = px_to_cm(img.size[0], avg)
@@ -998,6 +1097,23 @@ def run_gui():
                 h_marks=self.h_override, v_marks=self.v_override,
             )
 
+        def _update_warnings(self, w_cm, h_cm):
+            msgs = []
+            m = self._pf(self.margin.get(), 0)
+            ms = self._pf(self.marker_size.get(), 0)
+            sp = self._pf(self.target_spacing.get(), 0)
+            if getattr(self, '_src_px', None) and w_cm > 0 and h_cm > 0:
+                eff = min(self._src_px[0] / w_cm, self._src_px[1] / h_cm) * 2.54
+                if not getattr(self, '_dpi_found', True):
+                    msgs.append("Plik bez DPI – sprawdź wymiary ręcznie.")
+                if eff < 72:
+                    msgs.append(f"Niska rozdzielczość wydruku (~{eff:.0f} DPI).")
+            if ms <= 0 or sp <= 0 or m < 0:
+                msgs.append("Rozmiary i rozstaw muszą być dodatnie.")
+            if w_cm > 0 and h_cm > 0 and 2 * m >= min(w_cm, h_cm):
+                msgs.append("Odległość osi od krawędzi za duża – celowniki się nakładają.")
+            self.warn.set("   ".join("⚠ " + x for x in msgs))
+
         def render_now(self):
             self._render_job = None
             if self.work_img is None:
@@ -1024,6 +1140,7 @@ def run_gui():
             self.h_count_lbl.set(f"{r['h_marks']} oczek • co {r['h_spacing']:.1f} cm")
             self.v_count_lbl.set(f"{r['v_marks']} oczek • co {r['v_spacing']:.1f} cm")
             self.status.set(f"{r['marker_count']} celowników   |   wydruk {w_cm:.1f} × {h_cm:.1f} cm")
+            self._update_warnings(w_cm, h_cm)
             self.save_btn.config(state='normal')
 
             if self._need_fit and self.canvas.winfo_width() > 10:
@@ -1119,6 +1236,7 @@ def run_gui():
             fmt = self.out_format.get()
             out = filedialog.asksaveasfilename(
                 title="Zapisz przetworzony banner",
+                initialdir=self.last_out_dir or self.last_dir or '',
                 initialfile=f"{base}_processed.{fmt}",
                 defaultextension=f".{fmt}",
                 filetypes=[("JPEG", "*.jpg *.jpeg"), ("TIFF", "*.tif *.tiff"),
@@ -1129,6 +1247,8 @@ def run_gui():
                 self.status.set("Zapisywanie…")
                 self.root.update_idletasks()
                 self._run_full(path, out)
+                self.last_out_dir = os.path.dirname(out)
+                self.open_folder_btn.config(state='normal')
                 self.status.set(f"Zapisano: {out}")
                 messagebox.showinfo("Sukces", f"Banner zapisany:\n{out}")
             except Exception as e:
@@ -1138,7 +1258,9 @@ def run_gui():
         def save_batch(self):
             if len(self.files) < 2:
                 return
-            out_dir = filedialog.askdirectory(title="Wybierz katalog docelowy dla wsadu")
+            out_dir = filedialog.askdirectory(
+                title="Wybierz katalog docelowy dla wsadu",
+                initialdir=self.last_out_dir or self.last_dir or None)
             if not out_dir:
                 return
             core = self._core_params()
@@ -1146,12 +1268,18 @@ def run_gui():
             # Wsad ma używać wymiarów każdego pliku z osobna, żeby wykryć plik
             # o innym rozmiarze; inaczej narzucony rozmiar rozciągnąłby go po cichu.
             core.pop('target_width_cm', None); core.pop('target_height_cm', None)
+
+            def on_progress(i, total, name):
+                self.status.set(f"Przetwarzanie wsadu… {i}/{total}: {name}")
+                self.root.update()
+
             try:
-                self.status.set("Przetwarzanie wsadu…")
-                self.root.update_idletasks()
                 outputs = process_batch(
                     self.files, output_dir=out_dir, output_ext=f".{self.out_format.get()}",
-                    params=core, pdf_dpi=int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)))
+                    params=core, pdf_dpi=int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)),
+                    progress=on_progress)
+                self.last_out_dir = out_dir
+                self.open_folder_btn.config(state='normal')
                 self.status.set(f"Wsad gotowy: {len(outputs)} plików w {out_dir}")
                 messagebox.showinfo("Sukces", f"Zapisano {len(outputs)} plików do:\n{out_dir}")
             except ValueError as e:
@@ -1171,7 +1299,7 @@ def run_gui():
             finally:
                 sys.stdout = old
 
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if DND_AVAILABLE else tk.Tk()
     app = BannerApp(root)
     root.mainloop()
 

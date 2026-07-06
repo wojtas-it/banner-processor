@@ -69,12 +69,15 @@ def px_to_cm(px, dpi):
     return px * 2.54 / dpi
 
 
-def calculate_positions(length_cm, edge_offset_cm, target_spacing_cm):
+def calculate_positions(length_cm, edge_offset_cm, target_spacing_cm, forced_marks=None):
     """
     Zwraca pozycje osi celowników wzdłuż jednego boku (w cm, od krawędzi).
     Punkty skrajne leżą w odległości edge_offset_cm od krawędzi (do osi).
     Środkowe rozłożone są równo tak, aby odstęp między kolejnymi punktami
     przebicia był jak najbliższy docelowemu. Wszystkie odstępy są równe.
+
+    forced_marks – jeśli podane, wymusza tę liczbę celowników na boku
+    (ręczna korekta +/-); rozstaw wyliczany jest wtedy z tej liczby.
     """
     first_pos = edge_offset_cm
     last_pos = length_cm - edge_offset_cm
@@ -82,6 +85,11 @@ def calculate_positions(length_cm, edge_offset_cm, target_spacing_cm):
 
     if span <= 0:
         return [length_cm / 2.0]
+
+    if forced_marks is not None:
+        n = max(1, int(forced_marks) - 1)
+        spacing = span / n
+        return [first_pos + i * spacing for i in range(n + 1)]
 
     if target_spacing_cm <= 0:
         return [first_pos, last_pos]
@@ -265,6 +273,127 @@ def read_dpi(img):
     return float(dpi), float(dpi), True
 
 
+def render_banner(img, avg_dpi, width_cm, height_cm,
+                  marker_size_cm=DEFAULT_MARKER_SIZE_CM,
+                  margin_cm=DEFAULT_MARGIN_CM,
+                  target_spacing_cm=DEFAULT_TARGET_SPACING_CM,
+                  border_cm=DEFAULT_BORDER_CM,
+                  border_enabled=DEFAULT_BORDER_ENABLED,
+                  inner_line_enabled=DEFAULT_INNER_LINE_ENABLED,
+                  inner_line_width_cm=DEFAULT_INNER_LINE_WIDTH_CM,
+                  inner_line_opacity=DEFAULT_INNER_LINE_OPACITY,
+                  outer_line_enabled=DEFAULT_OUTER_LINE_ENABLED,
+                  outer_line_width_cm=DEFAULT_OUTER_LINE_WIDTH_CM,
+                  outer_line_opacity=DEFAULT_OUTER_LINE_OPACITY,
+                  h_marks=None, v_marks=None, verbose=True):
+    """
+    Rdzeń przetwarzania: nakłada celowniki, białą ramkę i linie na podany obraz.
+    Rysuje bezpośrednio na 'img' (rogi/celowniki), więc podawaj kopię jeśli
+    oryginał ma zostać nienaruszony. Zwraca słownik z gotowym obrazem oraz
+    liczbą oczek i rozstawem na każdym boku (do podglądu i korekty +/-).
+    """
+    mode = img.mode
+    width_px, height_px = img.size
+
+    def log(msg):
+        if verbose:
+            print(msg)
+
+    # ── KROK 1: Celowniki na oryginalnym obrazie ──
+    log("\n[1/3] Nakładanie celowników...")
+    draw = ImageDraw.Draw(img)
+    marker_size_px = cm_to_px(marker_size_cm, avg_dpi)
+
+    # Wymiarowanie do OSI celownika: margin_cm to odległość osi od krawędzi.
+    edge_offset_cm = margin_cm
+
+    corners = [
+        (edge_offset_cm, edge_offset_cm),
+        (width_cm - edge_offset_cm, edge_offset_cm),
+        (edge_offset_cm, height_cm - edge_offset_cm),
+        (width_cm - edge_offset_cm, height_cm - edge_offset_cm),
+    ]
+
+    h_positions = calculate_positions(width_cm, edge_offset_cm, target_spacing_cm, h_marks)
+    v_positions = calculate_positions(height_cm, edge_offset_cm, target_spacing_cm, v_marks)
+
+    h_inner = h_positions[1:-1] if len(h_positions) >= 2 else []
+    v_inner = v_positions[1:-1] if len(v_positions) >= 2 else []
+
+    all_markers = list(corners)
+    for x_cm in h_inner:
+        all_markers.append((x_cm, edge_offset_cm))
+        all_markers.append((x_cm, height_cm - edge_offset_cm))
+    for y_cm in v_inner:
+        all_markers.append((edge_offset_cm, y_cm))
+        all_markers.append((width_cm - edge_offset_cm, y_cm))
+
+    for x_cm, y_cm in all_markers:
+        draw_crosshair(draw, cm_to_px(x_cm, avg_dpi), cm_to_px(y_cm, avg_dpi),
+                       marker_size_px, mode)
+
+    h_spacing = (h_positions[1] - h_positions[0]) if len(h_positions) >= 2 else 0.0
+    v_spacing = (v_positions[1] - v_positions[0]) if len(v_positions) >= 2 else 0.0
+    log(f"  Nałożono {len(all_markers)} celowników ({marker_size_cm*10:.0f}x{marker_size_cm*10:.0f} mm)")
+    log(f"  Poziomo: {len(h_positions)} oczek na bok, "
+        f"rozstaw co {h_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
+    log(f"  Pionowo: {len(v_positions)} oczek na bok, "
+        f"rozstaw co {v_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
+
+    # ── KROK 2: Biała ramka na zgrzew ──
+    white = get_white_color(mode)
+    if border_enabled and border_cm > 0:
+        log("\n[2/3] Dodawanie białej ramki na zgrzew...")
+        border_px = cm_to_px(border_cm, avg_dpi)
+        new_width = width_px + 2 * border_px
+        new_height = height_px + 2 * border_px
+        new_img = Image.new(mode, (new_width, new_height), white)
+        new_img.paste(img, (border_px, border_px))
+        log(f"  Ramka: {border_cm} cm = {border_px} px")
+    else:
+        log("\n[2/3] Biała ramka: WYŁĄCZONA")
+        new_img = img
+        new_width, new_height = width_px, height_px
+        border_px = 0
+
+    img_left, img_top = border_px, border_px
+    img_right = border_px + width_px - 1
+    img_bottom = border_px + height_px - 1
+
+    # ── KROK 3: Linie (w osi krawędzi obrazu + na krawędzi ramki) ──
+    log("\n[3/3] Rysowanie linii...")
+    draw2 = ImageDraw.Draw(new_img)
+    any_line = False
+
+    if inner_line_enabled and inner_line_opacity > 0 and inner_line_width_cm > 0:
+        inner_color = get_black_color(mode, inner_line_opacity)
+        inner_w = max(1, cm_to_px(inner_line_width_cm, avg_dpi))
+        draw_edge_frame(draw2, img_left, img_top, img_right, img_bottom, inner_w, inner_color)
+        log(f"  Wewnętrzna: {inner_line_width_cm*10:.1f} mm | "
+            f"nasycenie {inner_line_opacity}% (w osi krawędzi obrazu)")
+        any_line = True
+
+    if outer_line_enabled and outer_line_opacity > 0 and outer_line_width_cm > 0:
+        outer_color = get_black_color(mode, outer_line_opacity)
+        outer_w = max(1, cm_to_px(outer_line_width_cm, avg_dpi))
+        draw_outer_frame(draw2, new_width, new_height, outer_w, outer_color)
+        log(f"  Zewnętrzna: {outer_line_width_cm*10:.1f} mm | "
+            f"nasycenie {outer_line_opacity}% (na krawędzi ramki)")
+        any_line = True
+
+    if not any_line:
+        log("  Linie: WYŁĄCZONE")
+
+    return {
+        'image': new_img,
+        'h_marks': len(h_positions),
+        'v_marks': len(v_positions),
+        'h_spacing': h_spacing,
+        'v_spacing': v_spacing,
+        'marker_count': len(all_markers),
+    }
+
+
 def process_banner(
     input_path,
     output_path=None,
@@ -281,6 +410,8 @@ def process_banner(
     outer_line_opacity=DEFAULT_OUTER_LINE_OPACITY,
     target_width_cm=None,
     target_height_cm=None,
+    h_marks=None,
+    v_marks=None,
     jpeg_quality=DEFAULT_JPEG_QUALITY,
     pdf_render_dpi=DEFAULT_PDF_DPI,
     save=True,
@@ -317,101 +448,18 @@ def process_banner(
         print(f"  Profil ICC:    TAK (zachowany)")
     print(f"{'='*60}")
 
-    # ── KROK 1: Celowniki na oryginalnym obrazie ──
-    print("\n[1/3] Nakładanie celowników...")
+    render = render_banner(
+        img, avg_dpi, width_cm, height_cm,
+        marker_size_cm=marker_size_cm, margin_cm=margin_cm,
+        target_spacing_cm=target_spacing_cm,
+        border_cm=border_cm, border_enabled=border_enabled,
+        inner_line_enabled=inner_line_enabled, inner_line_width_cm=inner_line_width_cm,
+        inner_line_opacity=inner_line_opacity,
+        outer_line_enabled=outer_line_enabled, outer_line_width_cm=outer_line_width_cm,
+        outer_line_opacity=outer_line_opacity,
+        h_marks=h_marks, v_marks=v_marks, verbose=True)
 
-    draw = ImageDraw.Draw(img)
-    marker_size_px = cm_to_px(marker_size_cm, avg_dpi)
-
-    # Wymiarowanie do OSI celownika: margin_cm to odległość osi od krawędzi.
-    edge_offset_cm = margin_cm
-
-    corners = [
-        (edge_offset_cm, edge_offset_cm),
-        (width_cm - edge_offset_cm, edge_offset_cm),
-        (edge_offset_cm, height_cm - edge_offset_cm),
-        (width_cm - edge_offset_cm, height_cm - edge_offset_cm),
-    ]
-
-    h_positions = calculate_positions(width_cm, edge_offset_cm, target_spacing_cm)
-    v_positions = calculate_positions(height_cm, edge_offset_cm, target_spacing_cm)
-
-    h_inner = h_positions[1:-1] if len(h_positions) >= 2 else []
-    v_inner = v_positions[1:-1] if len(v_positions) >= 2 else []
-
-    all_markers = []
-    for cx, cy in corners:
-        all_markers.append((cx, cy))
-    for x_cm in h_inner:
-        all_markers.append((x_cm, edge_offset_cm))
-    for x_cm in h_inner:
-        all_markers.append((x_cm, height_cm - edge_offset_cm))
-    for y_cm in v_inner:
-        all_markers.append((edge_offset_cm, y_cm))
-    for y_cm in v_inner:
-        all_markers.append((width_cm - edge_offset_cm, y_cm))
-
-    for x_cm, y_cm in all_markers:
-        x = cm_to_px(x_cm, avg_dpi)
-        y = cm_to_px(y_cm, avg_dpi)
-        draw_crosshair(draw, x, y, marker_size_px, mode)
-
-    print(f"  Nałożono {len(all_markers)} celowników ({marker_size_cm*10:.0f}x{marker_size_cm*10:.0f} mm)")
-    h_spacing = (h_positions[1] - h_positions[0]) if len(h_positions) >= 2 else 0.0
-    v_spacing = (v_positions[1] - v_positions[0]) if len(v_positions) >= 2 else 0.0
-    print(f"  Poziomo: {len(h_positions)} oczek na bok, "
-          f"rozstaw co {h_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
-    print(f"  Pionowo: {len(v_positions)} oczek na bok, "
-          f"rozstaw co {v_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
-
-    # ── KROK 2: Biała ramka na zgrzew ──
-    white = get_white_color(mode)
-
-    if border_enabled and border_cm > 0:
-        print("\n[2/3] Dodawanie białej ramki na zgrzew...")
-        border_px = cm_to_px(border_cm, avg_dpi)
-        new_width = width_px + 2 * border_px
-        new_height = height_px + 2 * border_px
-        new_img = Image.new(mode, (new_width, new_height), white)
-        new_img.paste(img, (border_px, border_px))
-        print(f"  Ramka: {border_cm} cm = {border_px} px")
-    else:
-        print("\n[2/3] Biała ramka: WYŁĄCZONA")
-        new_img = img
-        new_width, new_height = width_px, height_px
-        border_px = 0
-
-    # Położenie oryginalnego obrazu na nowym płótnie
-    img_left = border_px
-    img_top = border_px
-    img_right = border_px + width_px - 1
-    img_bottom = border_px + height_px - 1
-
-    # ── KROK 3: Linie (w osi krawędzi obrazu + na krawędzi ramki) ──
-    print("\n[3/3] Rysowanie linii...")
-    draw2 = ImageDraw.Draw(new_img)
-    any_line = False
-
-    # Linia wewnętrzna – wyśrodkowana na krawędzi oryginalnego obrazu
-    if inner_line_enabled and inner_line_opacity > 0 and inner_line_width_cm > 0:
-        inner_color = get_black_color(mode, inner_line_opacity)
-        inner_w = max(1, cm_to_px(inner_line_width_cm, avg_dpi))
-        draw_edge_frame(draw2, img_left, img_top, img_right, img_bottom, inner_w, inner_color)
-        print(f"  Wewnętrzna: {inner_line_width_cm*10:.1f} mm | "
-              f"nasycenie {inner_line_opacity}% (w osi krawędzi obrazu)")
-        any_line = True
-
-    # Linia zewnętrzna – przy samej krawędzi białej ramki
-    if outer_line_enabled and outer_line_opacity > 0 and outer_line_width_cm > 0:
-        outer_color = get_black_color(mode, outer_line_opacity)
-        outer_w = max(1, cm_to_px(outer_line_width_cm, avg_dpi))
-        draw_outer_frame(draw2, new_width, new_height, outer_w, outer_color)
-        print(f"  Zewnętrzna: {outer_line_width_cm*10:.1f} mm | "
-              f"nasycenie {outer_line_opacity}% (na krawędzi ramki)")
-        any_line = True
-
-    if not any_line:
-        print("  Linie: WYŁĄCZONE")
+    new_img = render['image']
 
     # ── Zapis lub zwrot ──
     result_info = {
@@ -421,6 +469,14 @@ def process_banner(
         'dpi_y': dpi_y,
         'icc_profile': icc_profile,
         'jpeg_quality': jpeg_quality,
+        'width_cm': width_cm,
+        'height_cm': height_cm,
+        'avg_dpi': avg_dpi,
+        'h_marks': render['h_marks'],
+        'v_marks': render['v_marks'],
+        'h_spacing': render['h_spacing'],
+        'v_spacing': render['v_spacing'],
+        'marker_count': render['marker_count'],
     }
 
     if output_path is None and not save:
@@ -512,28 +568,27 @@ def run_gui():
         print("Brak modułu tkinter. Użyj wiersza poleceń.")
         sys.exit(1)
 
+    WORK_MAX_PX = 1400   # maksymalny dłuższy bok kopii roboczej podglądu
+
     class CollapsibleFrame(ttk.Frame):
-        def __init__(self, parent, text="", default_open=False, on_toggle=None, **kwargs):
+        def __init__(self, parent, text="", default_open=True, on_toggle=None, **kwargs):
             super().__init__(parent, **kwargs)
             self.is_open = default_open
             self.on_toggle = on_toggle
-            self.header = ttk.Frame(self)
-            self.header.pack(fill='x')
-            self.toggle_btn = ttk.Button(
-                self.header, text=f"{'▼' if self.is_open else '▶'} {text}",
-                command=self.toggle, style='Toolbutton'
-            )
-            self.toggle_btn.pack(fill='x')
             self.label_text = text
+            self.toggle_btn = ttk.Button(
+                self, text=f"{'▼' if self.is_open else '▶'}  {text}",
+                command=self.toggle, style='Toolbutton')
+            self.toggle_btn.pack(fill='x')
             self.content = ttk.Frame(self)
             if self.is_open:
-                self.content.pack(fill='x', padx=15, pady=(0, 5))
+                self.content.pack(fill='x', padx=12, pady=(2, 6))
 
         def toggle(self):
             self.is_open = not self.is_open
-            self.toggle_btn.config(text=f"{'▼' if self.is_open else '▶'} {self.label_text}")
+            self.toggle_btn.config(text=f"{'▼' if self.is_open else '▶'}  {self.label_text}")
             if self.is_open:
-                self.content.pack(fill='x', padx=15, pady=(0, 5))
+                self.content.pack(fill='x', padx=12, pady=(2, 6))
             else:
                 self.content.pack_forget()
             if self.on_toggle:
@@ -543,29 +598,49 @@ def run_gui():
         def __init__(self, root):
             self.root = root
             self.root.title("Banner Processor - StudioDelta.pl")
-            self.root.geometry("650x700")
-            self.root.resizable(True, True)
-            self.root.minsize(620, 500)
+            try:
+                self.root.state('zoomed')
+            except tk.TclError:
+                self.root.geometry("1280x820")
+            self.root.minsize(1040, 640)
 
-            self.input_path = tk.StringVar()
-            self.preview_image = None
-            self.processed_result = None
+            # ── stan ──
+            self.files = []
+            self.current_index = 0
+            self.source_img = None
+            self.work_img = None
+            self.preview_pil = None
+            self.tk_img = None
+            self.orig_dpi = (150.0, 150.0)
+            self.src_w_cm = self.src_h_cm = 0.0
+            self._aspect = 1.0
+            self.h_override = None
+            self.v_override = None
+            self._last_h = 2
+            self._last_v = 2
+            self._render_job = None
+            self._loading = False
+            self._need_fit = True
+
+            # zoom / pan
+            self.zoom = 1.0
+            self.fit_zoom = 1.0
+            self.offset = [0, 0]
+            self._drag = None
 
             cfg = load_config()
 
-            # Pola numeryczne jako StringVar – akceptują przecinek dziesiętny.
+            # pola numeryczne jako StringVar – akceptują przecinek
             self.marker_size = tk.StringVar(value=self._fmt(cfg.get('marker_size', DEFAULT_MARKER_SIZE_CM)))
             self.margin = tk.StringVar(value=self._fmt(cfg.get('margin', DEFAULT_MARGIN_CM)))
             self.target_spacing = tk.StringVar(value=self._fmt(cfg.get('target_spacing', DEFAULT_TARGET_SPACING_CM)))
             self.border_cm = tk.StringVar(value=self._fmt(cfg.get('border', DEFAULT_BORDER_CM)))
             self.border_enabled = tk.BooleanVar(value=cfg.get('border_enabled', DEFAULT_BORDER_ENABLED))
 
-            # Linia wewnętrzna
             self.inner_line_enabled = tk.BooleanVar(value=cfg.get('inner_line_enabled', DEFAULT_INNER_LINE_ENABLED))
             self.inner_line_width = tk.StringVar(value=self._fmt(cfg.get('inner_line_width', DEFAULT_INNER_LINE_WIDTH_CM)))
             self.inner_line_opacity = tk.IntVar(value=cfg.get('inner_line_opacity', DEFAULT_INNER_LINE_OPACITY))
 
-            # Linia zewnętrzna (migracja ze starego pojedynczego 'line_*')
             self.outer_line_enabled = tk.BooleanVar(
                 value=cfg.get('outer_line_enabled', cfg.get('outline_enabled', DEFAULT_OUTER_LINE_ENABLED)))
             self.outer_line_width = tk.StringVar(
@@ -576,20 +651,28 @@ def run_gui():
             self.target_width = tk.StringVar(value="")
             self.target_height = tk.StringVar(value="")
             self.lock_aspect = tk.BooleanVar(value=True)
-            self._aspect = None          # szer/wys oryginału (do blokady proporcji)
+            self.pdf_dpi = tk.StringVar(value=str(cfg.get('pdf_dpi', DEFAULT_PDF_DPI)))
+            self.out_format = tk.StringVar(value='jpg')
+
+            # etykiety dynamiczne
+            self.file_info = tk.StringVar(value="Nie wczytano pliku")
+            self.h_count_lbl = tk.StringVar(value="—")
+            self.v_count_lbl = tk.StringVar(value="—")
+            self.zoom_lbl = tk.StringVar(value="100%")
+            self.status = tk.StringVar(value="Wczytaj plik, aby zacząć.")
             self._suppress_dim_trace = False
 
             self.build_ui()
+            self._bind_live_updates()
 
+        # ── pomocnicze ──
         @staticmethod
         def _fmt(value):
-            """Ładny zapis liczby dla pola tekstowego (bez zbędnych zer)."""
             f = float(value)
             return str(int(f)) if f == int(f) else str(f)
 
         @staticmethod
         def _pf(text, default=0.0):
-            """Parsuje liczbę z pola, akceptując przecinek. Pusty/błędny -> default."""
             s = str(text).strip().replace(',', '.')
             if not s:
                 return default
@@ -611,6 +694,7 @@ def run_gui():
                 'outer_line_enabled': self.outer_line_enabled.get(),
                 'outer_line_width': self._pf(self.outer_line_width.get(), DEFAULT_OUTER_LINE_WIDTH_CM),
                 'outer_line_opacity': self.outer_line_opacity.get(),
+                'pdf_dpi': int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)),
             }
 
         def save_settings(self):
@@ -620,336 +704,459 @@ def run_gui():
             except Exception as e:
                 messagebox.showerror("Błąd", f"Nie udało się zapisać:\n{e}")
 
-        def _build_line_controls(self, width_var, opacity_var):
-            """Wiersz kontrolek dla jednej linii: grubość + suwak nasycenia."""
-            fw = ttk.Frame(self.col_border.content)
-            fw.pack(fill='x', pady=1)
-            ttk.Label(fw, text="   Grubość (cm):", width=30).pack(side='left')
-            ttk.Entry(fw, textvariable=width_var, width=10).pack(side='left')
-
-            fo = ttk.Frame(self.col_border.content)
-            fo.pack(fill='x', pady=(1, 3))
-            ttk.Label(fo, text="   Nasycenie (%):", width=30).pack(side='left')
-            ttk.Scale(fo, from_=0, to=100, variable=opacity_var,
-                      orient='horizontal').pack(side='left', fill='x', expand=True)
-            ttk.Label(fo, textvariable=opacity_var, width=4).pack(side='left')
-
-        def _on_dim_change(self, which):
-            """Przy zablokowanych proporcjach dolicza drugi wymiar."""
-            if self._suppress_dim_trace or not self.lock_aspect.get() or not self._aspect:
-                return
-            self._suppress_dim_trace = True
-            try:
-                if which == 'w':
-                    w = self._pf(self.target_width.get(), 0)
-                    self.target_height.set(self._fmt(round(w / self._aspect, 1)) if w > 0 else "")
-                else:
-                    h = self._pf(self.target_height.get(), 0)
-                    self.target_width.set(self._fmt(round(h * self._aspect, 1)) if h > 0 else "")
-            finally:
-                self._suppress_dim_trace = False
-
-        def update_scroll_region(self):
-            self.inner_frame.update_idletasks()
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
+        # ── budowa interfejsu ──
         def build_ui(self):
-            container = ttk.Frame(self.root)
-            container.pack(fill='both', expand=True)
+            # pasek górny
+            top = ttk.Frame(self.root, padding=(8, 6))
+            top.pack(side='top', fill='x')
+            ttk.Button(top, text="📂  Wczytaj plik(i)…", command=self.browse_files).pack(side='left')
+            self.file_combo = ttk.Combobox(top, state='readonly', width=32, values=[])
+            self.file_combo.pack(side='left', padx=(8, 0))
+            self.file_combo.bind('<<ComboboxSelected>>', self.on_file_selected)
 
-            self.canvas = tk.Canvas(container, highlightthickness=0)
-            scrollbar = ttk.Scrollbar(container, orient='vertical', command=self.canvas.yview)
-            self.canvas.configure(yscrollcommand=scrollbar.set)
-            scrollbar.pack(side='right', fill='y')
-            self.canvas.pack(side='left', fill='both', expand=True)
+            ttk.Label(top, text="Format:").pack(side='left', padx=(12, 2))
+            ttk.Combobox(top, textvariable=self.out_format, state='readonly', width=6,
+                         values=['jpg', 'tif', 'png', 'pdf']).pack(side='left')
 
-            self.inner_frame = ttk.Frame(self.canvas)
-            self.canvas_window = self.canvas.create_window((0, 0), window=self.inner_frame, anchor='nw')
+            self.batch_btn = ttk.Button(top, text="Zapisz wszystkie (wsad)…",
+                                        command=self.save_batch, state='disabled')
+            self.batch_btn.pack(side='right')
+            self.save_btn = ttk.Button(top, text="💾  Zapisz…", command=self.save_single, state='disabled')
+            self.save_btn.pack(side='right', padx=(0, 8))
 
-            def on_canvas_configure(event):
-                self.canvas.itemconfig(self.canvas_window, width=event.width)
-            self.canvas.bind('<Configure>', on_canvas_configure)
-            self.inner_frame.bind('<Configure>', lambda e: self.update_scroll_region())
+            ttk.Separator(self.root, orient='horizontal').pack(side='top', fill='x')
 
-            def on_mousewheel(event):
-                self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-            def on_mousewheel_linux(event):
-                if event.num == 4:
-                    self.canvas.yview_scroll(-1, "units")
-                elif event.num == 5:
-                    self.canvas.yview_scroll(1, "units")
-            self.canvas.bind_all("<MouseWheel>", on_mousewheel)
-            self.canvas.bind_all("<Button-4>", on_mousewheel_linux)
-            self.canvas.bind_all("<Button-5>", on_mousewheel_linux)
+            # główny podział: lewy panel + podgląd
+            body = ttk.Frame(self.root)
+            body.pack(side='top', fill='both', expand=True)
 
-            pad = {'padx': 10, 'pady': 3}
-            main = self.inner_frame
+            left_wrap = ttk.Frame(body, width=340)
+            left_wrap.pack(side='left', fill='y')
+            left_wrap.pack_propagate(False)
+            self._build_left_panel(left_wrap)
 
-            # ── Tytuł ──
-            ttk.Label(main, text="Banner Processor", font=('Segoe UI', 16, 'bold')).pack(pady=(15, 2))
-            ttk.Label(main, text="StudioDelta.pl", font=('Segoe UI', 10)).pack(pady=(0, 10))
+            ttk.Separator(body, orient='vertical').pack(side='left', fill='y')
 
-            # ── Plik ──
-            frame_file = ttk.LabelFrame(main, text="Plik", padding=10)
-            frame_file.pack(fill='x', **pad)
+            right = ttk.Frame(body)
+            right.pack(side='left', fill='both', expand=True)
+            self._build_preview(right)
 
-            ttk.Label(frame_file, text="Plik wejściowy:").pack(anchor='w')
-            f1 = ttk.Frame(frame_file)
-            f1.pack(fill='x', pady=2)
-            ttk.Entry(f1, textvariable=self.input_path, state='readonly').pack(side='left', fill='x', expand=True)
-            ttk.Button(f1, text="Wybierz...", command=self.browse_input).pack(side='right', padx=(5,0))
+            # pasek statusu
+            status = ttk.Frame(self.root, padding=(8, 3))
+            status.pack(side='bottom', fill='x')
+            ttk.Label(status, textvariable=self.status, font=('Segoe UI', 9)).pack(side='left')
 
-            self.info_label = ttk.Label(frame_file, text="", font=('Consolas', 9))
-            self.info_label.pack(anchor='w', pady=(5,0))
+        def _build_left_panel(self, parent):
+            canvas = tk.Canvas(parent, highlightthickness=0, width=320)
+            sb = ttk.Scrollbar(parent, orient='vertical', command=canvas.yview)
+            canvas.configure(yscrollcommand=sb.set)
+            sb.pack(side='right', fill='y')
+            canvas.pack(side='left', fill='both', expand=True)
+            inner = ttk.Frame(canvas)
+            win = canvas.create_window((0, 0), window=inner, anchor='nw')
+            canvas.bind('<Configure>', lambda e: canvas.itemconfig(win, width=e.width))
+            inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+            canvas.bind('<MouseWheel>', lambda e: canvas.yview_scroll(int(-e.delta / 120), 'units'))
+            self.left_scroll = canvas
 
-            # ── Wymiary ──
-            frame_size = ttk.LabelFrame(main, text="Docelowe wymiary wydruku (obrazka bez ramki)", padding=10)
-            frame_size.pack(fill='x', **pad)
+            pad = {'padx': 10, 'pady': 2}
 
-            ttk.Label(frame_size, text="Puste = oblicz z DPI pliku.",
-                      font=('Segoe UI', 8), foreground='gray').pack(anchor='w')
+            ttk.Label(inner, textvariable=self.file_info, font=('Consolas', 8),
+                      foreground='gray', wraplength=300, justify='left').pack(anchor='w', **pad)
 
-            f_sz = ttk.Frame(frame_size)
-            f_sz.pack(fill='x', pady=3)
-            ttk.Label(f_sz, text="Szerokość (cm):", width=15).pack(side='left')
-            ttk.Entry(f_sz, textvariable=self.target_width, width=10).pack(side='left')
-            ttk.Label(f_sz, text="   Wysokość (cm):", width=17).pack(side='left')
-            ttk.Entry(f_sz, textvariable=self.target_height, width=10).pack(side='left')
-
-            ttk.Checkbutton(frame_size, text="Zablokuj proporcje (wpisz jeden wymiar, drugi dolicz się sam)",
-                            variable=self.lock_aspect).pack(anchor='w', pady=(3, 0))
-
-            # Automatyczne przeliczanie drugiego wymiaru przy zablokowanych proporcjach
+            # Wymiary
+            fs = ttk.LabelFrame(inner, text="Wymiary wydruku (bez ramki)", padding=8)
+            fs.pack(fill='x', **pad)
+            row = ttk.Frame(fs); row.pack(fill='x', pady=2)
+            ttk.Label(row, text="Szer. (cm):", width=11).pack(side='left')
+            ttk.Entry(row, textvariable=self.target_width, width=8).pack(side='left')
+            ttk.Label(row, text="Wys. (cm):", width=10).pack(side='left', padx=(8, 0))
+            ttk.Entry(row, textvariable=self.target_height, width=8).pack(side='left')
+            ttk.Checkbutton(fs, text="Zablokuj proporcje", variable=self.lock_aspect).pack(anchor='w', pady=(3, 0))
             self.target_width.trace_add('write', lambda *a: self._on_dim_change('w'))
             self.target_height.trace_add('write', lambda *a: self._on_dim_change('h'))
 
-            # ── Celowniki (zwijane) ──
-            self.col_markers = CollapsibleFrame(main, text="Celowniki (znaczniki pozycji)",
-                                                 on_toggle=self.update_scroll_region)
-            self.col_markers.pack(fill='x', **pad)
+            # Celowniki
+            fc = ttk.LabelFrame(inner, text="Celowniki (miejsca na oczka)", padding=8)
+            fc.pack(fill='x', **pad)
+            for label, var in [("Rozmiar celownika (cm):", self.marker_size),
+                               ("Odległość osi od krawędzi (cm):", self.margin),
+                               ("Docelowy rozstaw (cm):", self.target_spacing)]:
+                r = ttk.Frame(fc); r.pack(fill='x', pady=1)
+                ttk.Label(r, text=label, width=27).pack(side='left')
+                ttk.Entry(r, textvariable=var, width=7).pack(side='left')
 
-            params_markers = [
-                ("Rozmiar celownika (cm):", self.marker_size),
-                ("Odległość osi od krawędzi (cm):", self.margin),
-                ("Docelowy rozstaw (cm):", self.target_spacing),
-            ]
-            for label_text, var in params_markers:
-                f = ttk.Frame(self.col_markers.content)
-                f.pack(fill='x', pady=1)
-                ttk.Label(f, text=label_text, width=30).pack(side='left')
-                ttk.Entry(f, textvariable=var, width=10).pack(side='left')
+            ttk.Separator(fc, orient='horizontal').pack(fill='x', pady=6)
 
-            ttk.Button(self.col_markers.content, text="Zapisz ustawienia",
-                       command=self.save_settings).pack(anchor='e', pady=(5, 0))
+            # korekta liczby oczek +/-
+            gh = ttk.Frame(fc); gh.pack(fill='x', pady=2)
+            ttk.Label(gh, text="Poziom:", width=8).pack(side='left')
+            ttk.Button(gh, text="−", width=3, command=self.h_minus).pack(side='left')
+            ttk.Button(gh, text="+", width=3, command=self.h_plus).pack(side='left', padx=(2, 6))
+            ttk.Label(gh, textvariable=self.h_count_lbl, font=('Segoe UI', 9, 'bold')).pack(side='left')
 
-            # ── Ramka i linie (zwijane) ──
-            self.col_border = CollapsibleFrame(main, text="Ramka i linie",
-                                                on_toggle=self.update_scroll_region)
-            self.col_border.pack(fill='x', **pad)
+            gv = ttk.Frame(fc); gv.pack(fill='x', pady=2)
+            ttk.Label(gv, text="Pion:", width=8).pack(side='left')
+            ttk.Button(gv, text="−", width=3, command=self.v_minus).pack(side='left')
+            ttk.Button(gv, text="+", width=3, command=self.v_plus).pack(side='left', padx=(2, 6))
+            ttk.Label(gv, textvariable=self.v_count_lbl, font=('Segoe UI', 9, 'bold')).pack(side='left')
 
-            # Biała ramka na zgrzew
-            ttk.Checkbutton(self.col_border.content, text="Dodaj białą ramkę (na zgrzew)",
-                            variable=self.border_enabled).pack(anchor='w', pady=(0, 3))
+            # Ramka i linie
+            fb = ttk.LabelFrame(inner, text="Ramka i linie", padding=8)
+            fb.pack(fill='x', **pad)
+            ttk.Checkbutton(fb, text="Biała ramka na zgrzew", variable=self.border_enabled).pack(anchor='w')
+            r = ttk.Frame(fb); r.pack(fill='x', pady=(1, 4))
+            ttk.Label(r, text="Szerokość ramki (cm):", width=27).pack(side='left')
+            ttk.Entry(r, textvariable=self.border_cm, width=7).pack(side='left')
 
-            f = ttk.Frame(self.col_border.content)
-            f.pack(fill='x', pady=1)
-            ttk.Label(f, text="Szerokość ramki (cm):", width=30).pack(side='left')
-            ttk.Entry(f, textvariable=self.border_cm, width=10).pack(side='left')
+            ttk.Separator(fb, orient='horizontal').pack(fill='x', pady=5)
+            ttk.Checkbutton(fb, text="Linia wewnętrzna (w osi krawędzi obrazu)",
+                            variable=self.inner_line_enabled).pack(anchor='w')
+            self._line_row(fb, "Grubość (cm):", self.inner_line_width)
+            self._opacity_row(fb, "Nasycenie (%):", self.inner_line_opacity)
 
-            ttk.Separator(self.col_border.content, orient='horizontal').pack(fill='x', pady=5)
+            ttk.Separator(fb, orient='horizontal').pack(fill='x', pady=5)
+            ttk.Checkbutton(fb, text="Linia zewnętrzna (na krawędzi ramki)",
+                            variable=self.outer_line_enabled).pack(anchor='w')
+            self._line_row(fb, "Grubość (cm):", self.outer_line_width)
+            self._opacity_row(fb, "Nasycenie (%):", self.outer_line_opacity)
 
-            # Linia wewnętrzna (w osi krawędzi obrazu)
-            ttk.Checkbutton(self.col_border.content, text="Linia wewnętrzna (w osi krawędzi obrazu)",
-                            variable=self.inner_line_enabled).pack(anchor='w', pady=(0, 3))
-            self._build_line_controls(self.inner_line_width, self.inner_line_opacity)
+            # PDF
+            fp = ttk.LabelFrame(inner, text="PDF", padding=8)
+            fp.pack(fill='x', **pad)
+            r = ttk.Frame(fp); r.pack(fill='x')
+            ttk.Label(r, text="Rozdzielczość rasteryzacji (DPI):", width=27).pack(side='left')
+            ttk.Entry(r, textvariable=self.pdf_dpi, width=7).pack(side='left')
 
-            ttk.Separator(self.col_border.content, orient='horizontal').pack(fill='x', pady=5)
+            ttk.Button(inner, text="Zapisz ustawienia jako domyślne",
+                       command=self.save_settings).pack(anchor='e', padx=10, pady=(4, 12))
 
-            # Linia zewnętrzna (na krawędzi białej ramki)
-            ttk.Checkbutton(self.col_border.content, text="Linia zewnętrzna (na krawędzi ramki)",
-                            variable=self.outer_line_enabled).pack(anchor='w', pady=(0, 3))
-            self._build_line_controls(self.outer_line_width, self.outer_line_opacity)
+        def _line_row(self, parent, label, var):
+            r = ttk.Frame(parent); r.pack(fill='x', pady=1)
+            ttk.Label(r, text="   " + label, width=27).pack(side='left')
+            ttk.Entry(r, textvariable=var, width=7).pack(side='left')
 
-            ttk.Button(self.col_border.content, text="Zapisz ustawienia",
-                       command=self.save_settings).pack(anchor='e', pady=(5, 0))
+        def _opacity_row(self, parent, label, var):
+            r = ttk.Frame(parent); r.pack(fill='x', pady=(0, 3))
+            ttk.Label(r, text="   " + label, width=20).pack(side='left')
+            ttk.Scale(r, from_=0, to=100, variable=var, orient='horizontal').pack(side='left', fill='x', expand=True)
+            ttk.Label(r, textvariable=var, width=4).pack(side='left')
 
-            # ── Przyciski ──
-            btn_frame = ttk.Frame(main)
-            btn_frame.pack(pady=10)
+        def _build_preview(self, parent):
+            bar = ttk.Frame(parent, padding=(6, 4))
+            bar.pack(side='top', fill='x')
+            ttk.Button(bar, text="Dopasuj", command=self.fit_view).pack(side='left')
+            ttk.Button(bar, text="−", width=3, command=lambda: self.zoom_by(1 / 1.25)).pack(side='left', padx=(8, 2))
+            ttk.Label(bar, textvariable=self.zoom_lbl, width=6, anchor='center').pack(side='left')
+            ttk.Button(bar, text="+", width=3, command=lambda: self.zoom_by(1.25)).pack(side='left', padx=(2, 0))
+            ttk.Label(bar, text="   kółko = zoom, przeciąganie = przesuwanie",
+                      foreground='gray', font=('Segoe UI', 8)).pack(side='left', padx=8)
 
-            self.preview_btn = ttk.Button(btn_frame, text="PODGLĄD", command=self.do_preview)
-            self.preview_btn.pack(side='left', ipadx=15, ipady=8, padx=5)
+            self.canvas = tk.Canvas(parent, background='#2b2b2b', highlightthickness=0)
+            self.canvas.pack(side='top', fill='both', expand=True)
+            self.canvas.bind('<Configure>', self._on_canvas_configure)
+            self.canvas.bind('<MouseWheel>', self.on_wheel)
+            self.canvas.bind('<ButtonPress-1>', self.on_press)
+            self.canvas.bind('<B1-Motion>', self.on_drag)
+            self.canvas.bind('<ButtonRelease-1>', self.on_release)
+            self.canvas.create_text(20, 20, anchor='nw', fill='#888',
+                                    text="Wczytaj plik, aby zobaczyć podgląd.")
 
-            self.save_btn = ttk.Button(btn_frame, text="ZAPISZ PLIK", command=self.do_save, state='disabled')
-            self.save_btn.pack(side='left', ipadx=15, ipady=8, padx=5)
-
-            # ── Podgląd ──
-            self.preview_frame = ttk.LabelFrame(main, text="Podgląd", padding=5)
-            self.preview_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-
-            self.preview_label = ttk.Label(self.preview_frame, text="Wybierz plik i kliknij PODGLĄD",
-                                            anchor='center', font=('Segoe UI', 9, 'italic'))
-            self.preview_label.pack(fill='both', expand=True)
-
-            self.status_label = ttk.Label(main, text="", font=('Consolas', 8), foreground='gray')
-            self.status_label.pack(fill='x', padx=10, pady=(0, 10))
-
-        def browse_input(self):
-            path = filedialog.askopenfilename(
-                title="Wybierz plik bannera",
+        # ── wczytywanie plików ──
+        def browse_files(self):
+            paths = filedialog.askopenfilenames(
+                title="Wybierz plik(i) bannera",
                 filetypes=[
                     ("Pliki graficzne", "*.tif *.tiff *.psd *.png *.jpg *.jpeg *.bmp *.pdf"),
                     ("PDF", "*.pdf"),
                     ("TIFF", "*.tif *.tiff"),
                     ("JPEG", "*.jpg *.jpeg"),
                     ("Wszystkie", "*.*"),
-                ]
-            )
-            if path:
-                self.input_path.set(path)
-                self.show_file_info(path)
-                self.save_btn.config(state='disabled')
-                self.processed_result = None
+                ])
+            if not paths:
+                return
+            self.files = list(paths)
+            self.current_index = 0
+            self.file_combo['values'] = [os.path.basename(p) for p in self.files]
+            self.file_combo.current(0)
+            self.batch_btn.config(state='normal' if len(self.files) > 1 else 'disabled')
+            self.load_current()
 
-        def show_file_info(self, path):
+        def on_file_selected(self, event):
+            idx = self.file_combo.current()
+            if idx >= 0 and idx != self.current_index:
+                self.current_index = idx
+                self.load_current()
+
+        def load_current(self):
+            path = self.files[self.current_index]
             try:
-                img = Image.open(path)
-                dpi = img.info.get('dpi', (150, 150))
-                if isinstance(dpi, tuple):
-                    dpi_x, dpi_y = float(dpi[0]), float(dpi[1])
-                else:
-                    dpi_x = dpi_y = float(dpi)
-                avg_dpi = (dpi_x + dpi_y) / 2.0
-                w_cm = px_to_cm(img.size[0], avg_dpi)
-                h_cm = px_to_cm(img.size[1], avg_dpi)
-                icc = "TAK" if img.info.get('icc_profile') else "NIE"
-                self.info_label.config(
-                    text=f"{img.mode} | {dpi_x:.0f}x{dpi_y:.0f} DPI | "
-                         f"{img.size[0]}x{img.size[1]} px | "
-                         f"{w_cm:.1f}x{h_cm:.1f} cm | ICC: {icc}"
-                )
+                img = load_source_image(path, int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)))
+            except Exception as e:
+                messagebox.showerror("Błąd", f"Nie udało się wczytać pliku:\n{e}")
+                return
 
-                # Proporcje z pikseli (niezależne od DPI) i auto-wypełnienie wymiarów.
-                self._aspect = img.size[0] / img.size[1] if img.size[1] else None
+            self._loading = True
+            self.source_img = img
+            dx, dy, found = read_dpi(img)
+            self.orig_dpi = (dx, dy)
+            avg = (dx + dy) / 2.0
+            self.src_w_cm = px_to_cm(img.size[0], avg)
+            self.src_h_cm = px_to_cm(img.size[1], avg)
+            self._aspect = img.size[0] / img.size[1] if img.size[1] else 1.0
+
+            self.target_width.set(self._fmt(round(self.src_w_cm, 1)))
+            self.target_height.set(self._fmt(round(self.src_h_cm, 1)))
+
+            # kopia robocza do szybkiego podglądu
+            w, h = img.size
+            scale = min(1.0, WORK_MAX_PX / max(w, h))
+            self.work_img = img.resize((max(1, int(w * scale)), max(1, int(h * scale)))) if scale < 1.0 else img.copy()
+
+            self.h_override = self.v_override = None
+            self._need_fit = True
+            icc = "TAK" if img.info.get('icc_profile') else "NIE"
+            dpi_txt = f"{dx:.0f}x{dy:.0f} DPI" if found else "brak DPI (przyjęto 150)"
+            self.file_info.set(
+                f"{os.path.basename(path)}\n{img.mode} | {dpi_txt} | "
+                f"{img.size[0]}x{img.size[1]} px | {self.src_w_cm:.1f}x{self.src_h_cm:.1f} cm | ICC: {icc}")
+            self._loading = False
+            self.render_now()
+
+        # ── proporcje / live update ──
+        def _on_dim_change(self, which):
+            if not self._suppress_dim_trace and self.lock_aspect.get() and self._aspect:
                 self._suppress_dim_trace = True
                 try:
-                    self.target_width.set(self._fmt(round(w_cm, 1)))
-                    self.target_height.set(self._fmt(round(h_cm, 1)))
+                    if which == 'w':
+                        w = self._pf(self.target_width.get(), 0)
+                        self.target_height.set(self._fmt(round(w / self._aspect, 1)) if w > 0 else "")
+                    else:
+                        h = self._pf(self.target_height.get(), 0)
+                        self.target_width.set(self._fmt(round(h * self._aspect, 1)) if h > 0 else "")
                 finally:
                     self._suppress_dim_trace = False
-            except Exception as e:
-                self.info_label.config(text=f"Błąd: {e}")
+            self.schedule_render(reset=True)
 
-        def get_target_dims(self):
-            tw = self.target_width.get().strip().replace(',', '.')
-            th = self.target_height.get().strip().replace(',', '.')
-            try:
-                return (float(tw) if tw else None, float(th) if th else None)
-            except ValueError:
-                raise ValueError(f"Nieprawidłowe wymiary: '{tw}' / '{th}'. Użyj kropki jako separatora dziesiętnego.")
+        def _bind_live_updates(self):
+            for v in [self.marker_size, self.margin, self.border_cm,
+                      self.inner_line_width, self.inner_line_opacity,
+                      self.outer_line_width, self.outer_line_opacity,
+                      self.border_enabled, self.inner_line_enabled, self.outer_line_enabled]:
+                v.trace_add('write', lambda *a: self.schedule_render())
+            self.target_spacing.trace_add('write', lambda *a: self.schedule_render(reset=True))
 
-        def do_preview(self):
-            if not self.input_path.get():
-                messagebox.showwarning("Uwaga", "Wybierz plik wejściowy!")
+        def schedule_render(self, reset=False):
+            if self._loading:
                 return
+            if reset:
+                self.h_override = self.v_override = None
+            if self._render_job:
+                self.root.after_cancel(self._render_job)
+            self._render_job = self.root.after(250, self.render_now)
 
-            self.preview_btn.config(state='disabled')
-            self.preview_label.config(text="Przetwarzanie...", image='')
-            self.root.update()
+        def _target_dims(self):
+            t_w = self._pf(self.target_width.get(), 0)
+            t_h = self._pf(self.target_height.get(), 0)
+            t_w = t_w if t_w > 0 else None
+            t_h = t_h if t_h > 0 else None
+            if t_w and t_h:
+                return t_w, t_h
+            if t_w:
+                return t_w, t_w / self._aspect
+            if t_h:
+                return t_h * self._aspect, t_h
+            return self.src_w_cm, self.src_h_cm
 
-            import io
-            old_stdout = sys.stdout
-            buffer = io.StringIO()
-            try:
-                sys.stdout = buffer
-
-                t_w, t_h = self.get_target_dims()
-
-                result = process_banner(
-                    input_path=self.input_path.get(),
-                    output_path=None,
-                    marker_size_cm=self._pf(self.marker_size.get(), DEFAULT_MARKER_SIZE_CM),
-                    margin_cm=self._pf(self.margin.get(), DEFAULT_MARGIN_CM),
-                    target_spacing_cm=self._pf(self.target_spacing.get(), DEFAULT_TARGET_SPACING_CM),
-                    border_cm=self._pf(self.border_cm.get(), DEFAULT_BORDER_CM),
-                    border_enabled=self.border_enabled.get(),
-                    inner_line_enabled=self.inner_line_enabled.get(),
-                    inner_line_width_cm=self._pf(self.inner_line_width.get(), DEFAULT_INNER_LINE_WIDTH_CM),
-                    inner_line_opacity=self.inner_line_opacity.get(),
-                    outer_line_enabled=self.outer_line_enabled.get(),
-                    outer_line_width_cm=self._pf(self.outer_line_width.get(), DEFAULT_OUTER_LINE_WIDTH_CM),
-                    outer_line_opacity=self.outer_line_opacity.get(),
-                    target_width_cm=t_w,
-                    target_height_cm=t_h,
-                    save=False,
-                )
-
-                log_text = buffer.getvalue().strip()
-
-                self.processed_result = result
-                self.save_btn.config(state='normal')
-
-                img = result['image']
-                preview = img.copy()
-                if preview.mode == 'CMYK':
-                    preview = preview.convert('RGB')
-                preview.thumbnail((600, 400))
-                self.preview_image = ImageTk.PhotoImage(preview)
-                self.preview_label.config(image=self.preview_image, text='')
-
-                lines = log_text.split('\n')
-                status = [l for l in lines if 'Nałożono' in l or 'Poziomo' in l or 'Pionowo' in l]
-                self.status_label.config(text=' | '.join(s.strip() for s in status[:3]) if status else "Gotowe")
-
-            except Exception as e:
-                messagebox.showerror("Błąd", str(e))
-            finally:
-                sys.stdout = old_stdout
-                self.preview_btn.config(state='normal')
-
-        def do_save(self):
-            if not self.processed_result:
-                messagebox.showwarning("Uwaga", "Najpierw kliknij PODGLĄD!")
-                return
-
-            base, _ = os.path.splitext(self.input_path.get())
-
-            output = filedialog.asksaveasfilename(
-                title="Zapisz przetworzony banner",
-                initialfile=os.path.basename(base) + "_processed.jpg",
-                defaultextension=".jpg",
-                filetypes=[
-                    ("JPEG", "*.jpg *.jpeg"),
-                    ("TIFF", "*.tif *.tiff"),
-                    ("PNG", "*.png"),
-                    ("PDF", "*.pdf"),
-                    ("Wszystkie", "*.*"),
-                ]
+        def _core_params(self):
+            t_w = self._pf(self.target_width.get(), 0)
+            t_h = self._pf(self.target_height.get(), 0)
+            return dict(
+                marker_size_cm=self._pf(self.marker_size.get(), DEFAULT_MARKER_SIZE_CM),
+                margin_cm=self._pf(self.margin.get(), DEFAULT_MARGIN_CM),
+                target_spacing_cm=self._pf(self.target_spacing.get(), DEFAULT_TARGET_SPACING_CM),
+                border_cm=self._pf(self.border_cm.get(), DEFAULT_BORDER_CM),
+                border_enabled=self.border_enabled.get(),
+                inner_line_enabled=self.inner_line_enabled.get(),
+                inner_line_width_cm=self._pf(self.inner_line_width.get(), DEFAULT_INNER_LINE_WIDTH_CM),
+                inner_line_opacity=self.inner_line_opacity.get(),
+                outer_line_enabled=self.outer_line_enabled.get(),
+                outer_line_width_cm=self._pf(self.outer_line_width.get(), DEFAULT_OUTER_LINE_WIDTH_CM),
+                outer_line_opacity=self.outer_line_opacity.get(),
+                target_width_cm=t_w if t_w > 0 else None,
+                target_height_cm=t_h if t_h > 0 else None,
+                h_marks=self.h_override, v_marks=self.v_override,
             )
-            if not output:
+
+        def render_now(self):
+            self._render_job = None
+            if self.work_img is None:
+                return
+            try:
+                w_cm, h_cm = self._target_dims()
+                if not w_cm or not h_cm or w_cm <= 0 or h_cm <= 0:
+                    return
+                ww, wh = self.work_img.size
+                avg = ((ww / w_cm) + (wh / h_cm)) / 2.0 * 2.54
+                params = self._core_params()
+                params.pop('target_width_cm'); params.pop('target_height_cm')
+                r = render_banner(self.work_img.copy(), avg, w_cm, h_cm, verbose=False, **params)
+            except Exception as e:
+                self.status.set(f"Błąd podglądu: {e}")
                 return
 
+            img = r['image']
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            self.preview_pil = img
+            self._last_h = r['h_marks']
+            self._last_v = r['v_marks']
+            self.h_count_lbl.set(f"{r['h_marks']} oczek • co {r['h_spacing']:.1f} cm")
+            self.v_count_lbl.set(f"{r['v_marks']} oczek • co {r['v_spacing']:.1f} cm")
+            self.status.set(f"{r['marker_count']} celowników   |   wydruk {w_cm:.1f} × {h_cm:.1f} cm")
+            self.save_btn.config(state='normal')
+
+            if self._need_fit and self.canvas.winfo_width() > 10:
+                self.fit_view()
+                self._need_fit = False
+            else:
+                self.redraw()
+
+        # ── zoom / pan ──
+        def _on_canvas_configure(self, event):
+            if self._need_fit and self.preview_pil is not None:
+                self.fit_view()
+                self._need_fit = False
+
+        def fit_view(self):
+            if self.preview_pil is None:
+                return
+            cw = max(self.canvas.winfo_width(), 10)
+            ch = max(self.canvas.winfo_height(), 10)
+            pw, ph = self.preview_pil.size
+            self.fit_zoom = min(cw / pw, ch / ph)
+            self.zoom = self.fit_zoom
+            self.offset = [(cw - pw * self.zoom) / 2, (ch - ph * self.zoom) / 2]
+            self.redraw()
+
+        def zoom_by(self, factor):
+            if self.preview_pil is None:
+                return
+            cw = self.canvas.winfo_width() / 2
+            ch = self.canvas.winfo_height() / 2
+            self._zoom_at(cw, ch, factor)
+
+        def _zoom_at(self, sx, sy, factor):
+            ix = (sx - self.offset[0]) / self.zoom
+            iy = (sy - self.offset[1]) / self.zoom
+            self.zoom = max(0.05, min(8.0, self.zoom * factor))
+            self.offset[0] = sx - ix * self.zoom
+            self.offset[1] = sy - iy * self.zoom
+            self.redraw()
+
+        def on_wheel(self, event):
+            if self.preview_pil is None:
+                return
+            self._zoom_at(event.x, event.y, 1.15 if event.delta > 0 else 1 / 1.15)
+
+        def on_press(self, event):
+            self._drag = (event.x, event.y, self.offset[0], self.offset[1])
+
+        def on_drag(self, event):
+            if not self._drag:
+                return
+            ox, oy, offx, offy = self._drag
+            self.offset = [offx + (event.x - ox), offy + (event.y - oy)]
+            self.redraw()
+
+        def on_release(self, event):
+            self._drag = None
+
+        def redraw(self):
+            if self.preview_pil is None:
+                return
+            pw, ph = self.preview_pil.size
+            zw, zh = max(1, int(pw * self.zoom)), max(1, int(ph * self.zoom))
+            disp = self.preview_pil.resize((zw, zh))
+            self.tk_img = ImageTk.PhotoImage(disp)
+            self.canvas.delete('all')
+            self.canvas.create_image(self.offset[0], self.offset[1], anchor='nw', image=self.tk_img)
+            self.zoom_lbl.set(f"{int(round(self.zoom * 100))}%")
+
+        # ── korekta liczby oczek ──
+        def h_plus(self):
+            self.h_override = self._last_h + 1
+            self.render_now()
+
+        def h_minus(self):
+            self.h_override = max(2, self._last_h - 1)
+            self.render_now()
+
+        def v_plus(self):
+            self.v_override = self._last_v + 1
+            self.render_now()
+
+        def v_minus(self):
+            self.v_override = max(2, self._last_v - 1)
+            self.render_now()
+
+        # ── zapis ──
+        def save_single(self):
+            if not self.files:
+                return
+            path = self.files[self.current_index]
+            base = os.path.splitext(os.path.basename(path))[0]
+            fmt = self.out_format.get()
+            out = filedialog.asksaveasfilename(
+                title="Zapisz przetworzony banner",
+                initialfile=f"{base}_processed.{fmt}",
+                defaultextension=f".{fmt}",
+                filetypes=[("JPEG", "*.jpg *.jpeg"), ("TIFF", "*.tif *.tiff"),
+                           ("PNG", "*.png"), ("PDF", "*.pdf"), ("Wszystkie", "*.*")])
+            if not out:
+                return
             try:
-                r = self.processed_result
-                save_kwargs = {'dpi': (r['dpi_x'], r['dpi_y'])}
-                if r['icc_profile']:
-                    save_kwargs['icc_profile'] = r['icc_profile']
-
-                ext_lower = os.path.splitext(output)[1].lower()
-                if ext_lower in ('.jpg', '.jpeg'):
-                    save_kwargs['quality'] = r['jpeg_quality']
-                    save_kwargs['subsampling'] = 0
-                elif ext_lower in ('.tif', '.tiff'):
-                    save_kwargs['compression'] = 'tiff_lzw'
-                elif ext_lower == '.pdf':
-                    save_kwargs.pop('icc_profile', None)
-
-                r['image'].save(output, **save_kwargs)
-                self.status_label.config(text=f"Zapisano: {output}")
-                messagebox.showinfo("Sukces", f"Banner zapisany!\n{output}")
-
+                self.status.set("Zapisywanie…")
+                self.root.update_idletasks()
+                self._run_full(path, out)
+                self.status.set(f"Zapisano: {out}")
+                messagebox.showinfo("Sukces", f"Banner zapisany:\n{out}")
             except Exception as e:
                 messagebox.showerror("Błąd", str(e))
+                self.status.set("Błąd zapisu.")
+
+        def save_batch(self):
+            if len(self.files) < 2:
+                return
+            out_dir = filedialog.askdirectory(title="Wybierz katalog docelowy dla wsadu")
+            if not out_dir:
+                return
+            core = self._core_params()
+            core.pop('h_marks'); core.pop('v_marks')  # wsad liczy oczka automatycznie
+            try:
+                self.status.set("Przetwarzanie wsadu…")
+                self.root.update_idletasks()
+                outputs = process_batch(
+                    self.files, output_dir=out_dir, output_ext=f".{self.out_format.get()}",
+                    params=core, pdf_dpi=int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)))
+                self.status.set(f"Wsad gotowy: {len(outputs)} plików w {out_dir}")
+                messagebox.showinfo("Sukces", f"Zapisano {len(outputs)} plików do:\n{out_dir}")
+            except ValueError as e:
+                messagebox.showerror("Różne wymiary", str(e))
+                self.status.set("Wsad przerwany: różne wymiary plików.")
+            except Exception as e:
+                messagebox.showerror("Błąd", str(e))
+
+        def _run_full(self, in_path, out_path):
+            import io
+            buf, old = io.StringIO(), sys.stdout
+            try:
+                sys.stdout = buf
+                process_banner(input_path=in_path, output_path=out_path,
+                               pdf_render_dpi=int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)),
+                               **self._core_params())
+            finally:
+                sys.stdout = old
 
     root = tk.Tk()
     app = BannerApp(root)

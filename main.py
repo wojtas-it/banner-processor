@@ -17,10 +17,18 @@ DEFAULT_MARKER_SIZE_CM = 1.0     # Rozmiar celownika (10x10mm)
 DEFAULT_MARGIN_CM = 2.0          # Odległość osi celownika od krawędzi
 DEFAULT_TARGET_SPACING_CM = 50.0
 DEFAULT_BORDER_CM = 3.6          # Biała ramka na zgrzew
-DEFAULT_LINE_WIDTH_CM = 0.05     # Grubość czarnej obramówki (~0.5mm)
-DEFAULT_LINE_OPACITY = 100       # Nasycenie obramówki (0-100%)
 DEFAULT_BORDER_ENABLED = True
-DEFAULT_OUTLINE_ENABLED = True
+
+# Linia wewnętrzna – w osi krawędzi obrazu (może lekko wciąć się w grafikę)
+DEFAULT_INNER_LINE_ENABLED = True
+DEFAULT_INNER_LINE_WIDTH_CM = 0.05   # ~0.5 mm
+DEFAULT_INNER_LINE_OPACITY = 100     # 0-100%
+
+# Linia zewnętrzna – na krawędzi białej ramki (na zgrzew)
+DEFAULT_OUTER_LINE_ENABLED = True
+DEFAULT_OUTER_LINE_WIDTH_CM = 0.03   # ~0.3 mm
+DEFAULT_OUTER_LINE_OPACITY = 70      # 0-100%
+
 DEFAULT_JPEG_QUALITY = 100
 
 CONFIG_FILENAME = "banner_processor_config.json"
@@ -156,6 +164,28 @@ def draw_crosshair(draw, cx_px, cy_px, size_px, mode):
                   cx_px + dot_r, cy_px + dot_r], fill=white)
 
 
+def draw_edge_frame(draw, left, top, right, bottom, thickness_px, color):
+    """
+    Rysuje ramkę-linię WYŚRODKOWANĄ na krawędziach prostokąta [left,top,right,bottom].
+    Linia leży w osi krawędzi: połowa grubości na zewnątrz, połowa do środka.
+    """
+    t = max(1, thickness_px)
+    h = t // 2
+    draw.rectangle([left - h, top - h, right + h, top + h], fill=color)        # góra
+    draw.rectangle([left - h, bottom - h, right + h, bottom + h], fill=color)  # dół
+    draw.rectangle([left - h, top - h, left + h, bottom + h], fill=color)      # lewo
+    draw.rectangle([right - h, top - h, right + h, bottom + h], fill=color)    # prawo
+
+
+def draw_outer_frame(draw, width, height, thickness_px, color):
+    """Rysuje linię przy samej zewnętrznej krawędzi płótna (do środka)."""
+    t = max(1, thickness_px)
+    draw.rectangle([0, 0, width - 1, t - 1], fill=color)                 # góra
+    draw.rectangle([0, height - t, width - 1, height - 1], fill=color)   # dół
+    draw.rectangle([0, 0, t - 1, height - 1], fill=color)                # lewo
+    draw.rectangle([width - t, 0, width - 1, height - 1], fill=color)    # prawo
+
+
 def process_banner(
     input_path,
     output_path=None,
@@ -163,10 +193,13 @@ def process_banner(
     margin_cm=DEFAULT_MARGIN_CM,
     target_spacing_cm=DEFAULT_TARGET_SPACING_CM,
     border_cm=DEFAULT_BORDER_CM,
-    line_width_cm=DEFAULT_LINE_WIDTH_CM,
-    line_opacity=DEFAULT_LINE_OPACITY,
     border_enabled=DEFAULT_BORDER_ENABLED,
-    outline_enabled=DEFAULT_OUTLINE_ENABLED,
+    inner_line_enabled=DEFAULT_INNER_LINE_ENABLED,
+    inner_line_width_cm=DEFAULT_INNER_LINE_WIDTH_CM,
+    inner_line_opacity=DEFAULT_INNER_LINE_OPACITY,
+    outer_line_enabled=DEFAULT_OUTER_LINE_ENABLED,
+    outer_line_width_cm=DEFAULT_OUTER_LINE_WIDTH_CM,
+    outer_line_opacity=DEFAULT_OUTER_LINE_OPACITY,
     target_width_cm=None,
     target_height_cm=None,
     jpeg_quality=DEFAULT_JPEG_QUALITY,
@@ -276,11 +309,11 @@ def process_banner(
     print(f"  Pionowo: {len(v_positions)} oczek na bok, "
           f"rozstaw co {v_spacing:.1f} cm (docelowo {target_spacing_cm:.0f})")
 
-    # ── KROK 2: Biała ramka ──
+    # ── KROK 2: Biała ramka na zgrzew ──
     white = get_white_color(mode)
 
     if border_enabled and border_cm > 0:
-        print("\n[2/3] Dodawanie białej ramki na zagięcie...")
+        print("\n[2/3] Dodawanie białej ramki na zgrzew...")
         border_px = cm_to_px(border_cm, avg_dpi)
         new_width = width_px + 2 * border_px
         new_height = height_px + 2 * border_px
@@ -291,27 +324,39 @@ def process_banner(
         print("\n[2/3] Biała ramka: WYŁĄCZONA")
         new_img = img
         new_width, new_height = width_px, height_px
+        border_px = 0
 
-    # ── KROK 3: Czarna obramówka ──
-    if outline_enabled and line_opacity > 0 and line_width_cm > 0:
-        print("\n[3/3] Rysowanie czarnej obramówki...")
-        draw2 = ImageDraw.Draw(new_img)
-        border_color = get_black_color(mode, line_opacity)
-        line_w = max(1, cm_to_px(line_width_cm, avg_dpi))
+    # Położenie oryginalnego obrazu na nowym płótnie
+    img_left = border_px
+    img_top = border_px
+    img_right = border_px + width_px - 1
+    img_bottom = border_px + height_px - 1
 
-        # Rysuj 4 wypełnione prostokąty na krawędziach (przylegające do samego brzegu)
-        # Góra
-        draw2.rectangle([0, 0, new_width - 1, line_w - 1], fill=border_color)
-        # Dół
-        draw2.rectangle([0, new_height - line_w, new_width - 1, new_height - 1], fill=border_color)
-        # Lewo
-        draw2.rectangle([0, 0, line_w - 1, new_height - 1], fill=border_color)
-        # Prawo
-        draw2.rectangle([new_width - line_w, 0, new_width - 1, new_height - 1], fill=border_color)
+    # ── KROK 3: Linie (w osi krawędzi obrazu + na krawędzi ramki) ──
+    print("\n[3/3] Rysowanie linii...")
+    draw2 = ImageDraw.Draw(new_img)
+    any_line = False
 
-        print(f"  Grubość: {line_width_cm*10:.1f} mm | Nasycenie: {line_opacity}%")
-    else:
-        print("\n[3/3] Obramówka: WYŁĄCZONA")
+    # Linia wewnętrzna – wyśrodkowana na krawędzi oryginalnego obrazu
+    if inner_line_enabled and inner_line_opacity > 0 and inner_line_width_cm > 0:
+        inner_color = get_black_color(mode, inner_line_opacity)
+        inner_w = max(1, cm_to_px(inner_line_width_cm, avg_dpi))
+        draw_edge_frame(draw2, img_left, img_top, img_right, img_bottom, inner_w, inner_color)
+        print(f"  Wewnętrzna: {inner_line_width_cm*10:.1f} mm | "
+              f"nasycenie {inner_line_opacity}% (w osi krawędzi obrazu)")
+        any_line = True
+
+    # Linia zewnętrzna – przy samej krawędzi białej ramki
+    if outer_line_enabled and outer_line_opacity > 0 and outer_line_width_cm > 0:
+        outer_color = get_black_color(mode, outer_line_opacity)
+        outer_w = max(1, cm_to_px(outer_line_width_cm, avg_dpi))
+        draw_outer_frame(draw2, new_width, new_height, outer_w, outer_color)
+        print(f"  Zewnętrzna: {outer_line_width_cm*10:.1f} mm | "
+              f"nasycenie {outer_line_opacity}% (na krawędzi ramki)")
+        any_line = True
+
+    if not any_line:
+        print("  Linie: WYŁĄCZONE")
 
     # ── Zapis lub zwrot ──
     result_info = {
@@ -406,29 +451,64 @@ def run_gui():
 
             cfg = load_config()
 
-            self.marker_size = tk.DoubleVar(value=cfg.get('marker_size', DEFAULT_MARKER_SIZE_CM))
-            self.margin = tk.DoubleVar(value=cfg.get('margin', DEFAULT_MARGIN_CM))
-            self.target_spacing = tk.DoubleVar(value=cfg.get('target_spacing', DEFAULT_TARGET_SPACING_CM))
-            self.border_cm = tk.DoubleVar(value=cfg.get('border', DEFAULT_BORDER_CM))
-            self.line_width = tk.DoubleVar(value=cfg.get('line_width', DEFAULT_LINE_WIDTH_CM))
-            self.line_opacity = tk.IntVar(value=cfg.get('line_opacity', DEFAULT_LINE_OPACITY))
+            # Pola numeryczne jako StringVar – akceptują przecinek dziesiętny.
+            self.marker_size = tk.StringVar(value=self._fmt(cfg.get('marker_size', DEFAULT_MARKER_SIZE_CM)))
+            self.margin = tk.StringVar(value=self._fmt(cfg.get('margin', DEFAULT_MARGIN_CM)))
+            self.target_spacing = tk.StringVar(value=self._fmt(cfg.get('target_spacing', DEFAULT_TARGET_SPACING_CM)))
+            self.border_cm = tk.StringVar(value=self._fmt(cfg.get('border', DEFAULT_BORDER_CM)))
             self.border_enabled = tk.BooleanVar(value=cfg.get('border_enabled', DEFAULT_BORDER_ENABLED))
-            self.outline_enabled = tk.BooleanVar(value=cfg.get('outline_enabled', DEFAULT_OUTLINE_ENABLED))
+
+            # Linia wewnętrzna
+            self.inner_line_enabled = tk.BooleanVar(value=cfg.get('inner_line_enabled', DEFAULT_INNER_LINE_ENABLED))
+            self.inner_line_width = tk.StringVar(value=self._fmt(cfg.get('inner_line_width', DEFAULT_INNER_LINE_WIDTH_CM)))
+            self.inner_line_opacity = tk.IntVar(value=cfg.get('inner_line_opacity', DEFAULT_INNER_LINE_OPACITY))
+
+            # Linia zewnętrzna (migracja ze starego pojedynczego 'line_*')
+            self.outer_line_enabled = tk.BooleanVar(
+                value=cfg.get('outer_line_enabled', cfg.get('outline_enabled', DEFAULT_OUTER_LINE_ENABLED)))
+            self.outer_line_width = tk.StringVar(
+                value=self._fmt(cfg.get('outer_line_width', cfg.get('line_width', DEFAULT_OUTER_LINE_WIDTH_CM))))
+            self.outer_line_opacity = tk.IntVar(
+                value=cfg.get('outer_line_opacity', cfg.get('line_opacity', DEFAULT_OUTER_LINE_OPACITY)))
+
             self.target_width = tk.StringVar(value="")
             self.target_height = tk.StringVar(value="")
+            self.lock_aspect = tk.BooleanVar(value=True)
+            self._aspect = None          # szer/wys oryginału (do blokady proporcji)
+            self._suppress_dim_trace = False
 
             self.build_ui()
 
+        @staticmethod
+        def _fmt(value):
+            """Ładny zapis liczby dla pola tekstowego (bez zbędnych zer)."""
+            f = float(value)
+            return str(int(f)) if f == int(f) else str(f)
+
+        @staticmethod
+        def _pf(text, default=0.0):
+            """Parsuje liczbę z pola, akceptując przecinek. Pusty/błędny -> default."""
+            s = str(text).strip().replace(',', '.')
+            if not s:
+                return default
+            try:
+                return float(s)
+            except ValueError:
+                return default
+
         def get_current_settings(self):
             return {
-                'marker_size': self.marker_size.get(),
-                'margin': self.margin.get(),
-                'target_spacing': self.target_spacing.get(),
-                'border': self.border_cm.get(),
-                'line_width': self.line_width.get(),
-                'line_opacity': self.line_opacity.get(),
+                'marker_size': self._pf(self.marker_size.get(), DEFAULT_MARKER_SIZE_CM),
+                'margin': self._pf(self.margin.get(), DEFAULT_MARGIN_CM),
+                'target_spacing': self._pf(self.target_spacing.get(), DEFAULT_TARGET_SPACING_CM),
+                'border': self._pf(self.border_cm.get(), DEFAULT_BORDER_CM),
                 'border_enabled': self.border_enabled.get(),
-                'outline_enabled': self.outline_enabled.get(),
+                'inner_line_enabled': self.inner_line_enabled.get(),
+                'inner_line_width': self._pf(self.inner_line_width.get(), DEFAULT_INNER_LINE_WIDTH_CM),
+                'inner_line_opacity': self.inner_line_opacity.get(),
+                'outer_line_enabled': self.outer_line_enabled.get(),
+                'outer_line_width': self._pf(self.outer_line_width.get(), DEFAULT_OUTER_LINE_WIDTH_CM),
+                'outer_line_opacity': self.outer_line_opacity.get(),
             }
 
         def save_settings(self):
@@ -437,6 +517,35 @@ def run_gui():
                 messagebox.showinfo("Zapisano", f"Ustawienia zapisane.\n{path}")
             except Exception as e:
                 messagebox.showerror("Błąd", f"Nie udało się zapisać:\n{e}")
+
+        def _build_line_controls(self, width_var, opacity_var):
+            """Wiersz kontrolek dla jednej linii: grubość + suwak nasycenia."""
+            fw = ttk.Frame(self.col_border.content)
+            fw.pack(fill='x', pady=1)
+            ttk.Label(fw, text="   Grubość (cm):", width=30).pack(side='left')
+            ttk.Entry(fw, textvariable=width_var, width=10).pack(side='left')
+
+            fo = ttk.Frame(self.col_border.content)
+            fo.pack(fill='x', pady=(1, 3))
+            ttk.Label(fo, text="   Nasycenie (%):", width=30).pack(side='left')
+            ttk.Scale(fo, from_=0, to=100, variable=opacity_var,
+                      orient='horizontal').pack(side='left', fill='x', expand=True)
+            ttk.Label(fo, textvariable=opacity_var, width=4).pack(side='left')
+
+        def _on_dim_change(self, which):
+            """Przy zablokowanych proporcjach dolicza drugi wymiar."""
+            if self._suppress_dim_trace or not self.lock_aspect.get() or not self._aspect:
+                return
+            self._suppress_dim_trace = True
+            try:
+                if which == 'w':
+                    w = self._pf(self.target_width.get(), 0)
+                    self.target_height.set(self._fmt(round(w / self._aspect, 1)) if w > 0 else "")
+                else:
+                    h = self._pf(self.target_height.get(), 0)
+                    self.target_width.set(self._fmt(round(h * self._aspect, 1)) if h > 0 else "")
+            finally:
+                self._suppress_dim_trace = False
 
         def update_scroll_region(self):
             self.inner_frame.update_idletasks()
@@ -505,6 +614,13 @@ def run_gui():
             ttk.Label(f_sz, text="   Wysokość (cm):", width=17).pack(side='left')
             ttk.Entry(f_sz, textvariable=self.target_height, width=10).pack(side='left')
 
+            ttk.Checkbutton(frame_size, text="Zablokuj proporcje (wpisz jeden wymiar, drugi dolicz się sam)",
+                            variable=self.lock_aspect).pack(anchor='w', pady=(3, 0))
+
+            # Automatyczne przeliczanie drugiego wymiaru przy zablokowanych proporcjach
+            self.target_width.trace_add('write', lambda *a: self._on_dim_change('w'))
+            self.target_height.trace_add('write', lambda *a: self._on_dim_change('h'))
+
             # ── Celowniki (zwijane) ──
             self.col_markers = CollapsibleFrame(main, text="Celowniki (znaczniki pozycji)",
                                                  on_toggle=self.update_scroll_region)
@@ -524,47 +640,33 @@ def run_gui():
             ttk.Button(self.col_markers.content, text="Zapisz ustawienia",
                        command=self.save_settings).pack(anchor='e', pady=(5, 0))
 
-            # ── Ramka i obramówka (zwijane) ──
-            self.col_border = CollapsibleFrame(main, text="Ramka i obramówka",
+            # ── Ramka i linie (zwijane) ──
+            self.col_border = CollapsibleFrame(main, text="Ramka i linie",
                                                 on_toggle=self.update_scroll_region)
             self.col_border.pack(fill='x', **pad)
 
-            # Checkbox biała ramka
-            ttk.Checkbutton(self.col_border.content, text="Dodaj białą ramkę (na zagięcie)",
+            # Biała ramka na zgrzew
+            ttk.Checkbutton(self.col_border.content, text="Dodaj białą ramkę (na zgrzew)",
                             variable=self.border_enabled).pack(anchor='w', pady=(0, 3))
 
-            params_border_width = [
-                ("Szerokość ramki (cm):", self.border_cm),
-            ]
-            for label_text, var in params_border_width:
-                f = ttk.Frame(self.col_border.content)
-                f.pack(fill='x', pady=1)
-                ttk.Label(f, text=label_text, width=30).pack(side='left')
-                ttk.Entry(f, textvariable=var, width=10).pack(side='left')
+            f = ttk.Frame(self.col_border.content)
+            f.pack(fill='x', pady=1)
+            ttk.Label(f, text="Szerokość ramki (cm):", width=30).pack(side='left')
+            ttk.Entry(f, textvariable=self.border_cm, width=10).pack(side='left')
 
-            # Separator
             ttk.Separator(self.col_border.content, orient='horizontal').pack(fill='x', pady=5)
 
-            # Checkbox obramówka
-            ttk.Checkbutton(self.col_border.content, text="Dodaj czarną obramówkę",
-                            variable=self.outline_enabled).pack(anchor='w', pady=(0, 3))
+            # Linia wewnętrzna (w osi krawędzi obrazu)
+            ttk.Checkbutton(self.col_border.content, text="Linia wewnętrzna (w osi krawędzi obrazu)",
+                            variable=self.inner_line_enabled).pack(anchor='w', pady=(0, 3))
+            self._build_line_controls(self.inner_line_width, self.inner_line_opacity)
 
-            params_outline = [
-                ("Grubość obramówki (cm):", self.line_width),
-            ]
-            for label_text, var in params_outline:
-                f = ttk.Frame(self.col_border.content)
-                f.pack(fill='x', pady=1)
-                ttk.Label(f, text=label_text, width=30).pack(side='left')
-                ttk.Entry(f, textvariable=var, width=10).pack(side='left')
+            ttk.Separator(self.col_border.content, orient='horizontal').pack(fill='x', pady=5)
 
-            # Nasycenie obramówki
-            f_op = ttk.Frame(self.col_border.content)
-            f_op.pack(fill='x', pady=3)
-            ttk.Label(f_op, text="Nasycenie obramówki (%):", width=30).pack(side='left')
-            ttk.Scale(f_op, from_=0, to=100, variable=self.line_opacity,
-                      orient='horizontal').pack(side='left', fill='x', expand=True)
-            ttk.Label(f_op, textvariable=self.line_opacity, width=4).pack(side='left')
+            # Linia zewnętrzna (na krawędzi białej ramki)
+            ttk.Checkbutton(self.col_border.content, text="Linia zewnętrzna (na krawędzi ramki)",
+                            variable=self.outer_line_enabled).pack(anchor='w', pady=(0, 3))
+            self._build_line_controls(self.outer_line_width, self.outer_line_opacity)
 
             ttk.Button(self.col_border.content, text="Zapisz ustawienia",
                        command=self.save_settings).pack(anchor='e', pady=(5, 0))
@@ -623,6 +725,15 @@ def run_gui():
                          f"{img.size[0]}x{img.size[1]} px | "
                          f"{w_cm:.1f}x{h_cm:.1f} cm | ICC: {icc}"
                 )
+
+                # Proporcje z pikseli (niezależne od DPI) i auto-wypełnienie wymiarów.
+                self._aspect = img.size[0] / img.size[1] if img.size[1] else None
+                self._suppress_dim_trace = True
+                try:
+                    self.target_width.set(self._fmt(round(w_cm, 1)))
+                    self.target_height.set(self._fmt(round(h_cm, 1)))
+                finally:
+                    self._suppress_dim_trace = False
             except Exception as e:
                 self.info_label.config(text=f"Błąd: {e}")
 
@@ -654,14 +765,17 @@ def run_gui():
                 result = process_banner(
                     input_path=self.input_path.get(),
                     output_path=None,
-                    marker_size_cm=self.marker_size.get(),
-                    margin_cm=self.margin.get(),
-                    target_spacing_cm=self.target_spacing.get(),
-                    border_cm=self.border_cm.get(),
-                    line_width_cm=self.line_width.get(),
-                    line_opacity=self.line_opacity.get(),
+                    marker_size_cm=self._pf(self.marker_size.get(), DEFAULT_MARKER_SIZE_CM),
+                    margin_cm=self._pf(self.margin.get(), DEFAULT_MARGIN_CM),
+                    target_spacing_cm=self._pf(self.target_spacing.get(), DEFAULT_TARGET_SPACING_CM),
+                    border_cm=self._pf(self.border_cm.get(), DEFAULT_BORDER_CM),
                     border_enabled=self.border_enabled.get(),
-                    outline_enabled=self.outline_enabled.get(),
+                    inner_line_enabled=self.inner_line_enabled.get(),
+                    inner_line_width_cm=self._pf(self.inner_line_width.get(), DEFAULT_INNER_LINE_WIDTH_CM),
+                    inner_line_opacity=self.inner_line_opacity.get(),
+                    outer_line_enabled=self.outer_line_enabled.get(),
+                    outer_line_width_cm=self._pf(self.outer_line_width.get(), DEFAULT_OUTER_LINE_WIDTH_CM),
+                    outer_line_opacity=self.outer_line_opacity.get(),
                     target_width_cm=t_w,
                     target_height_cm=t_h,
                     save=False,
@@ -750,10 +864,17 @@ def main():
     parser.add_argument('--margin', type=float, default=DEFAULT_MARGIN_CM)
     parser.add_argument('--spacing', type=float, default=DEFAULT_TARGET_SPACING_CM)
     parser.add_argument('--border', type=float, default=DEFAULT_BORDER_CM)
-    parser.add_argument('--line-width', type=float, default=DEFAULT_LINE_WIDTH_CM)
-    parser.add_argument('--line-opacity', type=int, default=DEFAULT_LINE_OPACITY)
-    parser.add_argument('--no-border', action='store_true', help='Wyłącz białą ramkę')
-    parser.add_argument('--no-outline', action='store_true', help='Wyłącz czarną obramówkę')
+    parser.add_argument('--no-border', action='store_true', help='Wyłącz białą ramkę na zgrzew')
+    parser.add_argument('--inner-width', type=float, default=DEFAULT_INNER_LINE_WIDTH_CM,
+                        help='Grubość linii wewnętrznej (cm)')
+    parser.add_argument('--inner-opacity', type=int, default=DEFAULT_INNER_LINE_OPACITY,
+                        help='Nasycenie linii wewnętrznej (0-100)')
+    parser.add_argument('--no-inner', action='store_true', help='Wyłącz linię wewnętrzną')
+    parser.add_argument('--outer-width', type=float, default=DEFAULT_OUTER_LINE_WIDTH_CM,
+                        help='Grubość linii zewnętrznej (cm)')
+    parser.add_argument('--outer-opacity', type=int, default=DEFAULT_OUTER_LINE_OPACITY,
+                        help='Nasycenie linii zewnętrznej (0-100)')
+    parser.add_argument('--no-outer', action='store_true', help='Wyłącz linię zewnętrzną')
     parser.add_argument('--width', type=float, default=None)
     parser.add_argument('--height', type=float, default=None)
 
@@ -773,10 +894,13 @@ def main():
             margin_cm=args.margin,
             target_spacing_cm=args.spacing,
             border_cm=args.border,
-            line_width_cm=args.line_width,
-            line_opacity=args.line_opacity,
             border_enabled=not args.no_border,
-            outline_enabled=not args.no_outline,
+            inner_line_enabled=not args.no_inner,
+            inner_line_width_cm=args.inner_width,
+            inner_line_opacity=args.inner_opacity,
+            outer_line_enabled=not args.no_outer,
+            outer_line_width_cm=args.outer_width,
+            outer_line_opacity=args.outer_opacity,
             target_width_cm=args.width,
             target_height_cm=args.height,
         )

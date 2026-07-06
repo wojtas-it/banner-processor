@@ -30,6 +30,7 @@ DEFAULT_OUTER_LINE_WIDTH_CM = 0.03   # ~0.3 mm
 DEFAULT_OUTER_LINE_OPACITY = 70      # 0-100%
 
 DEFAULT_JPEG_QUALITY = 100
+DEFAULT_PDF_DPI = 150            # rozdzielczość rasteryzacji plików PDF
 
 CONFIG_FILENAME = "banner_processor_config.json"
 
@@ -186,6 +187,84 @@ def draw_outer_frame(draw, width, height, thickness_px, color):
     draw.rectangle([width - t, 0, width - 1, height - 1], fill=color)    # prawo
 
 
+def load_source_image(input_path, pdf_dpi=DEFAULT_PDF_DPI):
+    """
+    Wczytuje plik wejściowy jako obraz PIL. Dla PDF rasteryzuje pierwszą stronę
+    przy zadanym DPI (rozmiar fizyczny bierze się z wymiarów strony PDF).
+    """
+    Image.MAX_IMAGE_PIXELS = None  # wielkoformatowe pliki przekraczają domyślny limit Pillow
+    ext = os.path.splitext(input_path)[1].lower()
+
+    if ext == '.pdf':
+        try:
+            import pypdfium2 as pdfium
+        except ImportError:
+            raise RuntimeError(
+                "Obsługa PDF wymaga biblioteki pypdfium2. Zainstaluj: pip install pypdfium2")
+        pdf = pdfium.PdfDocument(input_path)
+        try:
+            page = pdf[0]
+            bitmap = page.render(scale=pdf_dpi / 72.0)
+            img = bitmap.to_pil()
+        finally:
+            pdf.close()
+        if img.mode not in ('RGB', 'CMYK', 'L'):
+            img = img.convert('RGB')
+        img.info['dpi'] = (float(pdf_dpi), float(pdf_dpi))
+        return img
+
+    return Image.open(input_path)
+
+
+def resolve_dimensions(width_px, height_px, orig_dpi_x, orig_dpi_y,
+                       target_width_cm=None, target_height_cm=None):
+    """Ustala wymiary w cm i efektywne DPI na podstawie pikseli i ewentualnych
+    wartości podanych ręcznie. Zwraca słownik z width_cm, height_cm, dpi_x,
+    dpi_y, avg_dpi i opisem źródła."""
+    if target_width_cm and target_height_cm:
+        width_cm = target_width_cm
+        height_cm = target_height_cm
+        dpi_x = width_px / width_cm * 2.54
+        dpi_y = height_px / height_cm * 2.54
+        avg_dpi = (dpi_x + dpi_y) / 2.0
+        source = "RĘCZNIE PODANE"
+    elif target_width_cm:
+        width_cm = target_width_cm
+        dpi_x = width_px / width_cm * 2.54
+        dpi_y = dpi_x
+        avg_dpi = dpi_x
+        height_cm = px_to_cm(height_px, avg_dpi)
+        source = "RĘCZNIE (szer.) + proporcja"
+    elif target_height_cm:
+        height_cm = target_height_cm
+        dpi_y = height_px / height_cm * 2.54
+        dpi_x = dpi_y
+        avg_dpi = dpi_y
+        width_cm = px_to_cm(width_px, avg_dpi)
+        source = "RĘCZNIE (wys.) + proporcja"
+    else:
+        dpi_x, dpi_y = orig_dpi_x, orig_dpi_y
+        avg_dpi = (dpi_x + dpi_y) / 2.0
+        width_cm = px_to_cm(width_px, avg_dpi)
+        height_cm = px_to_cm(height_px, avg_dpi)
+        source = "Z DPI PLIKU"
+
+    return {
+        'width_cm': width_cm, 'height_cm': height_cm,
+        'dpi_x': dpi_x, 'dpi_y': dpi_y, 'avg_dpi': avg_dpi, 'source': source,
+    }
+
+
+def read_dpi(img):
+    """Zwraca (dpi_x, dpi_y, znalezione?) z metadanych obrazu."""
+    dpi = img.info.get('dpi')
+    if dpi is None:
+        return 150.0, 150.0, False
+    if isinstance(dpi, tuple):
+        return float(dpi[0]), float(dpi[1]), True
+    return float(dpi), float(dpi), True
+
+
 def process_banner(
     input_path,
     output_path=None,
@@ -203,51 +282,27 @@ def process_banner(
     target_width_cm=None,
     target_height_cm=None,
     jpeg_quality=DEFAULT_JPEG_QUALITY,
+    pdf_render_dpi=DEFAULT_PDF_DPI,
     save=True,
 ):
     # ── Otwieranie i odczyt parametrów ──
-    Image.MAX_IMAGE_PIXELS = None  # wielkoformatowe pliki przekraczają domyślny limit Pillow
-    img = Image.open(input_path)
+    img = load_source_image(input_path, pdf_render_dpi)
     mode = img.mode
-    original_dpi = img.info.get('dpi')
-    if original_dpi is None:
+    orig_dpi_x, orig_dpi_y, dpi_found = read_dpi(img)
+    if not dpi_found:
         print("  UWAGA: plik nie zawiera metadanych DPI — przyjęto 150 DPI. Podaj wymiary ręcznie.")
-        original_dpi = (150, 150)
-    if isinstance(original_dpi, tuple):
-        orig_dpi_x, orig_dpi_y = float(original_dpi[0]), float(original_dpi[1])
-    else:
-        orig_dpi_x = orig_dpi_y = float(original_dpi)
 
     icc_profile = img.info.get('icc_profile', None)
     width_px, height_px = img.size
 
-    if target_width_cm and target_height_cm:
-        width_cm = target_width_cm
-        height_cm = target_height_cm
-        dpi_x = width_px / width_cm * 2.54
-        dpi_y = height_px / height_cm * 2.54
-        avg_dpi = (dpi_x + dpi_y) / 2.0
-        size_source = "RĘCZNIE PODANE"
-    elif target_width_cm:
-        width_cm = target_width_cm
-        dpi_x = width_px / width_cm * 2.54
-        dpi_y = dpi_x
-        avg_dpi = dpi_x
-        height_cm = px_to_cm(height_px, avg_dpi)
-        size_source = "RĘCZNIE (szer.) + proporcja"
-    elif target_height_cm:
-        height_cm = target_height_cm
-        dpi_y = height_px / height_cm * 2.54
-        dpi_x = dpi_y
-        avg_dpi = dpi_y
-        width_cm = px_to_cm(width_px, avg_dpi)
-        size_source = "RĘCZNIE (wys.) + proporcja"
-    else:
-        dpi_x, dpi_y = orig_dpi_x, orig_dpi_y
-        avg_dpi = (dpi_x + dpi_y) / 2.0
-        width_cm = px_to_cm(width_px, avg_dpi)
-        height_cm = px_to_cm(height_px, avg_dpi)
-        size_source = "Z DPI PLIKU"
+    dims = resolve_dimensions(width_px, height_px, orig_dpi_x, orig_dpi_y,
+                              target_width_cm, target_height_cm)
+    width_cm = dims['width_cm']
+    height_cm = dims['height_cm']
+    dpi_x = dims['dpi_x']
+    dpi_y = dims['dpi_y']
+    avg_dpi = dims['avg_dpi']
+    size_source = dims['source']
 
     print(f"{'='*60}")
     print(f"  BANNER PROCESSOR - StudioDelta.pl")
@@ -386,6 +441,9 @@ def process_banner(
         save_kwargs['subsampling'] = 0  # najlepsza jakość chroma
     elif ext_lower in ('.tif', '.tiff'):
         save_kwargs['compression'] = 'tiff_lzw'
+    elif ext_lower == '.pdf':
+        # Pillow zapisuje PDF jako raster; nie osadza profilu ICC.
+        save_kwargs.pop('icc_profile', None)
 
     new_img.save(output_path, **save_kwargs)
 
@@ -397,6 +455,50 @@ def process_banner(
 
     result_info['output_path'] = output_path
     return result_info
+
+
+def probe_size_cm(input_path, pdf_dpi=DEFAULT_PDF_DPI,
+                  target_width_cm=None, target_height_cm=None):
+    """Zwraca (szerokość_cm, wysokość_cm) pliku bez pełnego przetwarzania."""
+    img = load_source_image(input_path, pdf_dpi)
+    dx, dy, _ = read_dpi(img)
+    dims = resolve_dimensions(img.size[0], img.size[1], dx, dy,
+                              target_width_cm, target_height_cm)
+    return round(dims['width_cm'], 1), round(dims['height_cm'], 1)
+
+
+def process_batch(input_paths, output_dir=None, output_ext='.jpg',
+                  params=None, pdf_dpi=DEFAULT_PDF_DPI, tolerance_cm=0.2):
+    """
+    Przetwarza kilka plików tymi samymi ustawieniami. Wszystkie muszą mieć
+    jednakowe wymiary wydruku – jeśli któryś się różni, zgłasza błąd i nie
+    przetwarza niczego.
+    """
+    params = dict(params or {})
+    target_w = params.get('target_width_cm')
+    target_h = params.get('target_height_cm')
+
+    sizes = {p: probe_size_cm(p, pdf_dpi, target_w, target_h) for p in input_paths}
+    ref = sizes[input_paths[0]]
+
+    def matches(s):
+        return abs(s[0] - ref[0]) <= tolerance_cm and abs(s[1] - ref[1]) <= tolerance_cm
+
+    if not all(matches(s) for s in sizes.values()):
+        listing = "\n".join(
+            f"    {'OK ' if matches(s) else '>>>'} {os.path.basename(p)}: {s[0]}x{s[1]} cm"
+            for p, s in sizes.items())
+        raise ValueError(
+            "Pliki mają różne wymiary wydruku (wymagane jednakowe):\n" + listing)
+
+    outputs = []
+    for p in input_paths:
+        base = os.path.splitext(os.path.basename(p))[0]
+        out_dir = output_dir or os.path.dirname(p)
+        out = os.path.join(out_dir, f"{base}_processed{output_ext}")
+        process_banner(input_path=p, output_path=out, pdf_render_dpi=pdf_dpi, **params)
+        outputs.append(out)
+    return outputs
 
 
 # ─── GUI ─────────────────────────────────────────────────────────────────
@@ -696,7 +798,8 @@ def run_gui():
             path = filedialog.askopenfilename(
                 title="Wybierz plik bannera",
                 filetypes=[
-                    ("Pliki graficzne", "*.tif *.tiff *.psd *.png *.jpg *.jpeg *.bmp"),
+                    ("Pliki graficzne", "*.tif *.tiff *.psd *.png *.jpg *.jpeg *.bmp *.pdf"),
+                    ("PDF", "*.pdf"),
                     ("TIFF", "*.tif *.tiff"),
                     ("JPEG", "*.jpg *.jpeg"),
                     ("Wszystkie", "*.*"),
@@ -819,6 +922,7 @@ def run_gui():
                     ("JPEG", "*.jpg *.jpeg"),
                     ("TIFF", "*.tif *.tiff"),
                     ("PNG", "*.png"),
+                    ("PDF", "*.pdf"),
                     ("Wszystkie", "*.*"),
                 ]
             )
@@ -837,6 +941,8 @@ def run_gui():
                     save_kwargs['subsampling'] = 0
                 elif ext_lower in ('.tif', '.tiff'):
                     save_kwargs['compression'] = 'tiff_lzw'
+                elif ext_lower == '.pdf':
+                    save_kwargs.pop('icc_profile', None)
 
                 r['image'].save(output, **save_kwargs)
                 self.status_label.config(text=f"Zapisano: {output}")
@@ -858,8 +964,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    parser.add_argument('input', nargs='?', help='Plik wejściowy')
-    parser.add_argument('-o', '--output', help='Plik wyjściowy (domyślnie: _processed.jpg)')
+    parser.add_argument('input', nargs='*', help='Plik(i) wejściowy(e). Kilka = tryb wsadowy.')
+    parser.add_argument('-o', '--output', help='Plik wyjściowy (1 plik) lub katalog docelowy (wsad)')
+    parser.add_argument('--format', default='jpg', choices=['jpg', 'jpeg', 'tif', 'tiff', 'png', 'pdf'],
+                        help='Format wyjściowy gdy nie podano -o (domyślnie jpg)')
+    parser.add_argument('--pdf-dpi', type=int, default=DEFAULT_PDF_DPI,
+                        help='Rozdzielczość rasteryzacji plików PDF (domyślnie 150)')
     parser.add_argument('--marker-size', type=float, default=DEFAULT_MARKER_SIZE_CM)
     parser.add_argument('--margin', type=float, default=DEFAULT_MARGIN_CM)
     parser.add_argument('--spacing', type=float, default=DEFAULT_TARGET_SPACING_CM)
@@ -880,30 +990,45 @@ def main():
 
     args = parser.parse_args()
 
-    if args.input is None:
+    if not args.input:
         run_gui()
-    else:
-        if not os.path.exists(args.input):
-            print(f"Błąd: plik '{args.input}' nie istnieje!")
-            sys.exit(1)
+        return
 
-        process_banner(
-            input_path=args.input,
-            output_path=args.output,
-            marker_size_cm=args.marker_size,
-            margin_cm=args.margin,
-            target_spacing_cm=args.spacing,
-            border_cm=args.border,
-            border_enabled=not args.no_border,
-            inner_line_enabled=not args.no_inner,
-            inner_line_width_cm=args.inner_width,
-            inner_line_opacity=args.inner_opacity,
-            outer_line_enabled=not args.no_outer,
-            outer_line_width_cm=args.outer_width,
-            outer_line_opacity=args.outer_opacity,
-            target_width_cm=args.width,
-            target_height_cm=args.height,
-        )
+    missing = [p for p in args.input if not os.path.exists(p)]
+    if missing:
+        for p in missing:
+            print(f"Błąd: plik '{p}' nie istnieje!")
+        sys.exit(1)
+
+    params = dict(
+        marker_size_cm=args.marker_size,
+        margin_cm=args.margin,
+        target_spacing_cm=args.spacing,
+        border_cm=args.border,
+        border_enabled=not args.no_border,
+        inner_line_enabled=not args.no_inner,
+        inner_line_width_cm=args.inner_width,
+        inner_line_opacity=args.inner_opacity,
+        outer_line_enabled=not args.no_outer,
+        outer_line_width_cm=args.outer_width,
+        outer_line_opacity=args.outer_opacity,
+        target_width_cm=args.width,
+        target_height_cm=args.height,
+    )
+
+    if len(args.input) == 1:
+        process_banner(input_path=args.input[0], output_path=args.output,
+                       pdf_render_dpi=args.pdf_dpi, **params)
+    else:
+        # tryb wsadowy – wszystkie pliki muszą mieć jednakowe wymiary
+        try:
+            outputs = process_batch(
+                args.input, output_dir=args.output,
+                output_ext=f".{args.format}", params=params, pdf_dpi=args.pdf_dpi)
+        except ValueError as e:
+            print(f"\nBŁĄD WSADU: {e}")
+            sys.exit(1)
+        print(f"\n{'='*60}\n  WSAD GOTOWY: {len(outputs)} plików\n{'='*60}")
 
 
 if __name__ == '__main__':

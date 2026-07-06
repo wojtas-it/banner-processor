@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all
+
+# Dołącz bibliotekę PDF (binarka pdfium + dane) do pakietu .exe
+pdfium_datas, pdfium_binaries, pdfium_hiddenimports = collect_all('pypdfium2')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
+    binaries=pdfium_binaries,
+    datas=pdfium_datas,
+    hiddenimports=pdfium_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

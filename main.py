@@ -3,7 +3,7 @@
 Banner Processor - StudioDelta.pl
 Automatyzacja przygotowania bannerów wielkoformatowych.
 
-Wymagane: pip install Pillow
+Wymagane: pip install Pillow pypdfium2
 """
 
 import sys
@@ -213,15 +213,25 @@ def load_source_image(input_path, pdf_dpi=DEFAULT_PDF_DPI):
         try:
             page = pdf[0]
             bitmap = page.render(scale=pdf_dpi / 72.0)
-            img = bitmap.to_pil()
+            # .copy() materializuje piksele – to_pil() współdzieli bufor pdfium,
+            # który znika po zamknięciu dokumentu.
+            img = bitmap.to_pil().copy()
         finally:
             pdf.close()
-        if img.mode not in ('RGB', 'CMYK', 'L'):
-            img = img.convert('RGB')
+        img = _normalize_mode(img)
         img.info['dpi'] = (float(pdf_dpi), float(pdf_dpi))
         return img
 
-    return Image.open(input_path)
+    return _normalize_mode(Image.open(input_path))
+
+
+def _normalize_mode(img):
+    """Sprowadza obraz do trybu obsługiwanego przez rysowanie (RGB lub CMYK).
+    Skala szarości, paleta, RGBA itp. są konwertowane do RGB, żeby uniknąć
+    błędów kolorów przy nakładaniu celowników i ramek."""
+    if img.mode not in ('RGB', 'CMYK'):
+        img = img.convert('RGB')
+    return img
 
 
 def resolve_dimensions(width_px, height_px, orig_dpi_x, orig_dpi_y,
@@ -1133,6 +1143,9 @@ def run_gui():
                 return
             core = self._core_params()
             core.pop('h_marks'); core.pop('v_marks')  # wsad liczy oczka automatycznie
+            # Wsad ma używać wymiarów każdego pliku z osobna, żeby wykryć plik
+            # o innym rozmiarze; inaczej narzucony rozmiar rozciągnąłby go po cichu.
+            core.pop('target_width_cm', None); core.pop('target_height_cm', None)
             try:
                 self.status.set("Przetwarzanie wsadu…")
                 self.root.update_idletasks()

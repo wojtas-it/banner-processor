@@ -103,9 +103,9 @@ def calculate_positions(length_cm, edge_offset_cm, target_spacing_cm, forced_mar
 def get_white_color(mode):
     if mode == 'CMYK':
         return (0, 0, 0, 0)
-    elif mode == 'RGB':
-        return (255, 255, 255)
-    return (0, 0, 0, 0)
+    if mode == 'L':
+        return 255
+    return (255, 255, 255)
 
 
 def get_black_color(mode, opacity_pct=100):
@@ -113,10 +113,10 @@ def get_black_color(mode, opacity_pct=100):
     val = round(255 * opacity_pct / 100)
     if mode == 'CMYK':
         return (0, 0, 0, val)
-    elif mode == 'RGB':
-        gray = 255 - val
-        return (gray, gray, gray)
-    return (0, 0, 0, val)
+    if mode == 'L':
+        return 255 - val
+    gray = 255 - val
+    return (gray, gray, gray)
 
 
 def get_gray_color(mode, lightness_pct=50):
@@ -124,10 +124,10 @@ def get_gray_color(mode, lightness_pct=50):
     if mode == 'CMYK':
         k = round(255 * (100 - lightness_pct) / 100)
         return (0, 0, 0, k)
-    elif mode == 'RGB':
-        v = round(255 * lightness_pct / 100)
-        return (v, v, v)
-    return (0, 0, 0, round(255 * (100 - lightness_pct) / 100))
+    if mode == 'L':
+        return round(255 * lightness_pct / 100)
+    v = round(255 * lightness_pct / 100)
+    return (v, v, v)
 
 
 def draw_crosshair(draw, cx_px, cy_px, size_px, mode):
@@ -226,12 +226,15 @@ def load_source_image(input_path, pdf_dpi=DEFAULT_PDF_DPI):
 
 
 def _normalize_mode(img):
-    """Sprowadza obraz do trybu obsługiwanego przez rysowanie (RGB lub CMYK).
-    Skala szarości, paleta, RGBA itp. są konwertowane do RGB, żeby uniknąć
-    błędów kolorów przy nakładaniu celowników i ramek."""
-    if img.mode not in ('RGB', 'CMYK'):
-        img = img.convert('RGB')
-    return img
+    """Sprowadza obraz do trybu obsługiwanego przez rysowanie.
+    CMYK zostaje CMYK, RGB zostaje RGB, skala szarości (L) zostaje szarością
+    (drukuje się kanałem K). Reszta (paleta, RGBA, LA itp.) idzie do RGB, żeby
+    uniknąć błędów kolorów przy nakładaniu celowników i ramek."""
+    if img.mode in ('RGB', 'CMYK', 'L'):
+        return img
+    if img.mode == 'LA':          # szarość z kanałem alfa -> czysta szarość
+        return img.convert('L')
+    return img.convert('RGB')
 
 
 def resolve_dimensions(width_px, height_px, orig_dpi_x, orig_dpi_y,

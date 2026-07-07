@@ -1028,8 +1028,21 @@ def run_gui():
             self.file_combo.current(0)
             self.batch_btn.config(state='normal' if len(self.files) > 1 else 'disabled')
             self.last_dir = os.path.dirname(paths[0]) or self.last_dir
+            self._suggest_format()
             self._refresh_batch_hint()
             self.load_current()
+
+        def _suggest_format(self):
+            """Podpowiada format wsadu na podstawie wczytanych plików
+            (najczęstsze rozszerzenie wygrywa)."""
+            ext_map = {'.jpg': 'jpg', '.jpeg': 'jpg', '.tif': 'tif', '.tiff': 'tif',
+                       '.png': 'png', '.pdf': 'pdf'}
+            counts = {}
+            for p in self.files:
+                fmt = ext_map.get(os.path.splitext(p)[1].lower(), 'jpg')
+                counts[fmt] = counts.get(fmt, 0) + 1
+            if counts:
+                self.out_format.set(max(counts, key=counts.get))
 
         def _refresh_batch_hint(self):
             """Po wczytaniu wielu plików sprawdza, czy mają jednakowe wymiary,

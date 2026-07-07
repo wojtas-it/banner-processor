@@ -1267,9 +1267,10 @@ def run_gui():
             if not out_dir:
                 return
             core = self._core_params()
-            core.pop('h_marks'); core.pop('v_marks')  # wsad liczy oczka automatycznie
-            # Wsad ma używać wymiarów każdego pliku z osobna, żeby wykryć plik
-            # o innym rozmiarze; inaczej narzucony rozmiar rozciągnąłby go po cichu.
+            # Wsad wymaga jednakowych wymiarów, więc te same ustawienia — łącznie z
+            # ręczną korektą +/- liczby oczek — pasują do wszystkich plików.
+            # Wymiary bierzemy z każdego pliku osobno, żeby wykryć inny rozmiar
+            # zamiast po cichu go rozciągać.
             core.pop('target_width_cm', None); core.pop('target_height_cm', None)
 
             def on_progress(i, total, name):

@@ -505,6 +505,10 @@ def process_banner(
         save_kwargs['icc_profile'] = icc_profile
 
     ext_lower = os.path.splitext(output_path)[1].lower()
+    if ext_lower == '.png' and new_img.mode == 'CMYK':
+        raise RuntimeError(
+            "PNG nie obsługuje trybu CMYK. Zapisz plik CMYK jako TIFF (najlepiej) albo JPG.")
+
     if ext_lower in ('.jpg', '.jpeg'):
         save_kwargs['quality'] = jpeg_quality
         save_kwargs['subsampling'] = 0  # najlepsza jakość chroma

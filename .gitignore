@@ -25,3 +25,7 @@ Thumbs.db
 
 # Notatki prywatne
 ZMIANY_LOKALNE.txt
+potencjalne_problemy.txt
+
+# Lokalne ustawienia programu (zawiera sciezki uzytkownika)
+banner_processor_config.json

@@ -975,6 +975,8 @@ def run_gui():
             r2 = ttk.Frame(fp); r2.pack(fill='x', pady=1)
             ttk.Label(r2, text="PDF: rozdzielczość rasteryzacji (DPI):", width=32).pack(side='left')
             ttk.Entry(r2, textvariable=self.pdf_dpi, width=7).pack(side='left')
+            ttk.Label(fp, text="150 = standard dla wielkiego formatu (dotyczy tylko plików PDF)",
+                      font=('Segoe UI', 8), foreground='gray').pack(anchor='w', pady=(0, 2))
 
             ttk.Button(inner, text="Zapisz ustawienia jako domyślne",
                        command=self.save_settings).pack(anchor='e', padx=10, pady=(4, 12))

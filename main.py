@@ -29,7 +29,7 @@ DEFAULT_OUTER_LINE_ENABLED = True
 DEFAULT_OUTER_LINE_WIDTH_CM = 0.03   # ~0.3 mm
 DEFAULT_OUTER_LINE_OPACITY = 70      # 0-100%
 
-DEFAULT_JPEG_QUALITY = 100
+DEFAULT_JPEG_QUALITY = 95        # standard druku: bez widocznej różnicy, dużo mniejszy plik niż 100
 DEFAULT_PDF_DPI = 150            # rozdzielczość rasteryzacji plików PDF
 
 CONFIG_FILENAME = "banner_processor_config.json"
@@ -703,6 +703,7 @@ def run_gui():
             self.target_height = tk.StringVar(value="")
             self.lock_aspect = tk.BooleanVar(value=True)
             self.pdf_dpi = tk.StringVar(value=str(cfg.get('pdf_dpi', DEFAULT_PDF_DPI)))
+            self.jpeg_quality = tk.StringVar(value=str(cfg.get('jpeg_quality', DEFAULT_JPEG_QUALITY)))
             self.out_format = tk.StringVar(value=cfg.get('out_format', 'jpg'))
 
             # etykiety dynamiczne
@@ -752,7 +753,12 @@ def run_gui():
                 'outer_line_width': self._pf(self.outer_line_width.get(), DEFAULT_OUTER_LINE_WIDTH_CM),
                 'outer_line_opacity': self.outer_line_opacity.get(),
                 'pdf_dpi': int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)),
+                'jpeg_quality': self._jpeg_q(),
             }
+
+        def _jpeg_q(self):
+            """Jakość JPEG jako liczba całkowita w zakresie 1-100."""
+            return max(1, min(100, int(self._pf(self.jpeg_quality.get(), DEFAULT_JPEG_QUALITY))))
 
         def save_settings(self):
             try:
@@ -948,12 +954,17 @@ def run_gui():
             self._line_row(fb, "Grubość (cm):", self.outer_line_width)
             self._opacity_row(fb, "Nasycenie (%):", self.outer_line_opacity)
 
-            # PDF
-            fp = ttk.LabelFrame(inner, text="PDF", padding=8)
+            # Eksport
+            fp = ttk.LabelFrame(inner, text="Eksport", padding=8)
             fp.pack(fill='x', **pad)
-            r = ttk.Frame(fp); r.pack(fill='x')
-            ttk.Label(r, text="Rozdzielczość rasteryzacji (DPI):", width=27).pack(side='left')
-            ttk.Entry(r, textvariable=self.pdf_dpi, width=7).pack(side='left')
+            r = ttk.Frame(fp); r.pack(fill='x', pady=1)
+            ttk.Label(r, text="Jakość JPEG (1-100):", width=27).pack(side='left')
+            ttk.Entry(r, textvariable=self.jpeg_quality, width=7).pack(side='left')
+            ttk.Label(fp, text="95 = jakość drukarska, dużo mniejszy plik niż 100",
+                      font=('Segoe UI', 8), foreground='gray').pack(anchor='w', pady=(0, 4))
+            r2 = ttk.Frame(fp); r2.pack(fill='x', pady=1)
+            ttk.Label(r2, text="PDF: rozdzielczość rasteryzacji (DPI):", width=32).pack(side='left')
+            ttk.Entry(r2, textvariable=self.pdf_dpi, width=7).pack(side='left')
 
             ttk.Button(inner, text="Zapisz ustawienia jako domyślne",
                        command=self.save_settings).pack(anchor='e', padx=10, pady=(4, 12))
@@ -1323,6 +1334,7 @@ def run_gui():
             # Wymiary bierzemy z każdego pliku osobno, żeby wykryć inny rozmiar
             # zamiast po cichu go rozciągać.
             core.pop('target_width_cm', None); core.pop('target_height_cm', None)
+            core['jpeg_quality'] = self._jpeg_q()
 
             def on_progress(i, total, name):
                 self.status.set(f"Przetwarzanie wsadu… {i}/{total}: {name}")
@@ -1350,6 +1362,7 @@ def run_gui():
                 sys.stdout = buf
                 process_banner(input_path=in_path, output_path=out_path,
                                pdf_render_dpi=int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI)),
+                               jpeg_quality=self._jpeg_q(),
                                **self._core_params())
             finally:
                 sys.stdout = old

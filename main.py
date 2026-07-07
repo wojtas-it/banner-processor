@@ -830,25 +830,27 @@ def run_gui():
             # pasek górny
             top = ttk.Frame(self.root, padding=(8, 6))
             top.pack(side='top', fill='x')
+            # Lewa strona: wczytywanie
             ttk.Button(top, text="📂  Wczytaj plik(i)…", command=self.browse_files).pack(side='left')
             self.file_combo = ttk.Combobox(top, state='readonly', width=26, values=[])
             self.file_combo.pack(side='left', padx=(8, 0))
             self.file_combo.bind('<<ComboboxSelected>>', self.on_file_selected)
 
-            # Zapis jednego pliku
-            self.save_btn = ttk.Button(top, text="💾  Zapisz ten plik…",
+            # Prawa strona: zapisywanie (zgrupowane razem)
+            save_group = ttk.Frame(top)
+            save_group.pack(side='right')
+            self.save_btn = ttk.Button(save_group, text="💾  Zapisz plik",
                                        command=self.save_single, state='disabled')
-            self.save_btn.pack(side='left', padx=(24, 0))
-
-            # Zapis wszystkich naraz + format (najpierw przycisk, potem format)
-            self.batch_btn = ttk.Button(top, text="Zapisz wszystkie naraz…",
+            self.save_btn.pack(side='left')
+            self.batch_btn = ttk.Button(save_group, text="💾  Zapisz wszystkie",
                                         command=self.save_batch, state='disabled')
             self.batch_btn.pack(side='left', padx=(8, 0))
-            ttk.Label(top, text="w formacie:").pack(side='left', padx=(6, 3))
-            ttk.Combobox(top, textvariable=self.out_format, state='readonly', width=6,
-                         values=['jpg', 'tif', 'png', 'pdf']).pack(side='left')
-
-            self.open_folder_btn = ttk.Button(top, text="Otwórz folder wyniku",
+            ttk.Label(save_group, text="w formacie:").pack(side='left', padx=(6, 3))
+            self.format_combo = ttk.Combobox(save_group, textvariable=self.out_format,
+                                             state='disabled', width=6,
+                                             values=['jpg', 'tif', 'png', 'pdf'])
+            self.format_combo.pack(side='left')
+            self.open_folder_btn = ttk.Button(save_group, text="Otwórz folder wyniku",
                                               command=self.open_result_folder, state='disabled')
             self.open_folder_btn.pack(side='left', padx=(16, 0))
 
@@ -1027,11 +1029,17 @@ def run_gui():
             self.current_index = 0
             self.file_combo['values'] = [os.path.basename(p) for p in self.files]
             self.file_combo.current(0)
-            self.batch_btn.config(state='normal' if len(self.files) > 1 else 'disabled')
+            self._set_batch_enabled(len(self.files) > 1)
             self.last_dir = os.path.dirname(paths[0]) or self.last_dir
             self._suggest_format()
             self._refresh_batch_hint()
             self.load_current()
+
+        def _set_batch_enabled(self, enabled):
+            """Przycisk 'Zapisz wszystkie' i pole formatu włączone tylko razem —
+            format dotyczy wyłącznie zapisu wszystkich naraz."""
+            self.batch_btn.config(state='normal' if enabled else 'disabled')
+            self.format_combo.config(state='readonly' if enabled else 'disabled')
 
         def _suggest_format(self):
             """Podpowiada format wsadu na podstawie wczytanych plików
@@ -1064,12 +1072,12 @@ def run_gui():
                     f"✓ Wszystkie pliki mają ten sam wymiar ({ref[0]:.0f}×{ref[1]:.0f} cm) — "
                     f"można zapisać wszystkie naraz.")
                 self.batch_info_lbl.config(foreground='#2f8f5b')
-                self.batch_btn.config(state='normal')
+                self._set_batch_enabled(True)
             else:
                 self.batch_info.set(
                     "⚠ Wymiary plików różne — proszę zapisywać osobno!")
                 self.batch_info_lbl.config(foreground='#c9891a')
-                self.batch_btn.config(state='disabled')
+                self._set_batch_enabled(False)
 
         def on_file_selected(self, event):
             idx = self.file_combo.current()

@@ -831,25 +831,26 @@ def run_gui():
             top = ttk.Frame(self.root, padding=(8, 6))
             top.pack(side='top', fill='x')
             ttk.Button(top, text="📂  Wczytaj plik(i)…", command=self.browse_files).pack(side='left')
-            self.file_combo = ttk.Combobox(top, state='readonly', width=32, values=[])
+            self.file_combo = ttk.Combobox(top, state='readonly', width=26, values=[])
             self.file_combo.pack(side='left', padx=(8, 0))
             self.file_combo.bind('<<ComboboxSelected>>', self.on_file_selected)
 
-            # Grupa wsadu (po prawej): format dotyczy TYLKO zapisu wszystkich na raz.
-            batch_group = ttk.Frame(top)
-            batch_group.pack(side='right')
-            ttk.Label(batch_group, text="Format wsadu:").pack(side='left', padx=(0, 3))
-            ttk.Combobox(batch_group, textvariable=self.out_format, state='readonly', width=6,
-                         values=['jpg', 'tif', 'png', 'pdf']).pack(side='left', padx=(0, 6))
-            self.batch_btn = ttk.Button(batch_group, text="Zapisz wszystkie (wsad)…",
+            # Zapis jednego pliku
+            self.save_btn = ttk.Button(top, text="💾  Zapisz ten plik…",
+                                       command=self.save_single, state='disabled')
+            self.save_btn.pack(side='left', padx=(24, 0))
+
+            # Zapis wszystkich naraz + format (najpierw przycisk, potem format)
+            self.batch_btn = ttk.Button(top, text="Zapisz wszystkie naraz…",
                                         command=self.save_batch, state='disabled')
-            self.batch_btn.pack(side='left')
+            self.batch_btn.pack(side='left', padx=(8, 0))
+            ttk.Label(top, text="w formacie:").pack(side='left', padx=(6, 3))
+            ttk.Combobox(top, textvariable=self.out_format, state='readonly', width=6,
+                         values=['jpg', 'tif', 'png', 'pdf']).pack(side='left')
 
             self.open_folder_btn = ttk.Button(top, text="Otwórz folder wyniku",
                                               command=self.open_result_folder, state='disabled')
-            self.open_folder_btn.pack(side='right', padx=(0, 14))
-            self.save_btn = ttk.Button(top, text="💾  Zapisz…", command=self.save_single, state='disabled')
-            self.save_btn.pack(side='right', padx=(0, 12))
+            self.open_folder_btn.pack(side='left', padx=(16, 0))
 
             ttk.Separator(self.root, orient='horizontal').pack(side='top', fill='x')
 
@@ -1060,8 +1061,8 @@ def run_gui():
             same = all(abs(s[0] - ref[0]) <= 0.2 and abs(s[1] - ref[1]) <= 0.2 for s in sizes)
             if same:
                 self.batch_info.set(
-                    f"✓ Wymiary plików te same ({ref[0]:.0f}×{ref[1]:.0f} cm) — "
-                    f"można zapisać jako wsad (wszystkie na raz).")
+                    f"✓ Wszystkie pliki mają ten sam wymiar ({ref[0]:.0f}×{ref[1]:.0f} cm) — "
+                    f"można zapisać wszystkie naraz.")
                 self.batch_info_lbl.config(foreground='#2f8f5b')
                 self.batch_btn.config(state='normal')
             else:
@@ -1340,8 +1341,8 @@ def run_gui():
             if len(self.files) < 2:
                 return
             out_dir = filedialog.askdirectory(
-                title="Wybierz katalog docelowy dla wsadu",
-                initialdir=self.last_out_dir or self.last_dir or None)
+                title="Wybierz folder, w którym zapisać wszystkie pliki",
+                initialdir=self.last_out_dir or self.last_dir or '')
             if not out_dir:
                 return
             core = self._core_params()
@@ -1353,7 +1354,7 @@ def run_gui():
             core['jpeg_quality'] = self._jpeg_q()
 
             def on_progress(i, total, name):
-                self.status.set(f"Przetwarzanie wsadu… {i}/{total}: {name}")
+                self.status.set(f"Zapisuję wszystkie… {i}/{total}: {name}")
                 self.root.update()
 
             try:
@@ -1363,11 +1364,11 @@ def run_gui():
                     progress=on_progress)
                 self.last_out_dir = out_dir
                 self.open_folder_btn.config(state='normal')
-                self.status.set(f"Wsad gotowy: {len(outputs)} plików w {out_dir}")
-                messagebox.showinfo("Sukces", f"Zapisano {len(outputs)} plików do:\n{out_dir}")
+                self.status.set(f"Gotowe: zapisano {len(outputs)} plików w {out_dir}")
+                messagebox.showinfo("Gotowe", f"Zapisano {len(outputs)} plików do:\n{out_dir}")
             except ValueError as e:
                 messagebox.showerror("Różne wymiary", str(e))
-                self.status.set("Wsad przerwany: różne wymiary plików.")
+                self.status.set("Przerwano: pliki mają różne wymiary.")
             except Exception as e:
                 messagebox.showerror("Błąd", str(e))
 

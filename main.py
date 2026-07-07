@@ -835,18 +835,21 @@ def run_gui():
             self.file_combo.pack(side='left', padx=(8, 0))
             self.file_combo.bind('<<ComboboxSelected>>', self.on_file_selected)
 
-            ttk.Label(top, text="Format:").pack(side='left', padx=(12, 2))
-            ttk.Combobox(top, textvariable=self.out_format, state='readonly', width=6,
-                         values=['jpg', 'tif', 'png', 'pdf']).pack(side='left')
+            # Grupa wsadu (po prawej): format dotyczy TYLKO zapisu wszystkich na raz.
+            batch_group = ttk.Frame(top)
+            batch_group.pack(side='right')
+            ttk.Label(batch_group, text="Format wsadu:").pack(side='left', padx=(0, 3))
+            ttk.Combobox(batch_group, textvariable=self.out_format, state='readonly', width=6,
+                         values=['jpg', 'tif', 'png', 'pdf']).pack(side='left', padx=(0, 6))
+            self.batch_btn = ttk.Button(batch_group, text="Zapisz wszystkie (wsad)…",
+                                        command=self.save_batch, state='disabled')
+            self.batch_btn.pack(side='left')
 
             self.open_folder_btn = ttk.Button(top, text="Otwórz folder wyniku",
                                               command=self.open_result_folder, state='disabled')
-            self.open_folder_btn.pack(side='right', padx=(8, 0))
-            self.batch_btn = ttk.Button(top, text="Zapisz wszystkie (wsad)…",
-                                        command=self.save_batch, state='disabled')
-            self.batch_btn.pack(side='right')
+            self.open_folder_btn.pack(side='right', padx=(0, 14))
             self.save_btn = ttk.Button(top, text="💾  Zapisz…", command=self.save_single, state='disabled')
-            self.save_btn.pack(side='right', padx=(0, 8))
+            self.save_btn.pack(side='right', padx=(0, 12))
 
             ttk.Separator(self.root, orient='horizontal').pack(side='top', fill='x')
 

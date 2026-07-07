@@ -528,11 +528,27 @@ def process_banner(
 
 def probe_size_cm(input_path, pdf_dpi=DEFAULT_PDF_DPI,
                   target_width_cm=None, target_height_cm=None):
-    """Zwraca (szerokość_cm, wysokość_cm) pliku bez pełnego przetwarzania."""
-    img = load_source_image(input_path, pdf_dpi)
-    dx, dy, _ = read_dpi(img)
-    dims = resolve_dimensions(img.size[0], img.size[1], dx, dy,
-                              target_width_cm, target_height_cm)
+    """Zwraca (szerokość_cm, wysokość_cm) pliku bez pełnego przetwarzania.
+    Dla PDF czyta rozmiar strony bez rasteryzacji, dla rastra tylko nagłówek."""
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext == '.pdf':
+        try:
+            import pypdfium2 as pdfium
+        except ImportError:
+            raise RuntimeError("Obsługa PDF wymaga biblioteki pypdfium2.")
+        pdf = pdfium.PdfDocument(input_path)
+        try:
+            w_pt, h_pt = pdf[0].get_size()
+        finally:
+            pdf.close()
+        w_px, h_px = w_pt / 72.0 * pdf_dpi, h_pt / 72.0 * pdf_dpi
+        dx = dy = float(pdf_dpi)
+    else:
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(input_path) as img:
+            w_px, h_px = img.size
+            dx, dy, _ = read_dpi(img)
+    dims = resolve_dimensions(w_px, h_px, dx, dy, target_width_cm, target_height_cm)
     return round(dims['width_cm'], 1), round(dims['height_cm'], 1)
 
 
@@ -691,6 +707,7 @@ def run_gui():
 
             # etykiety dynamiczne
             self.file_info = tk.StringVar(value="Nie wczytano pliku")
+            self.batch_info = tk.StringVar(value="")
             self.warn = tk.StringVar(value="")
             self.h_count_lbl = tk.StringVar(value="—")
             self.v_count_lbl = tk.StringVar(value="—")
@@ -826,6 +843,13 @@ def run_gui():
             self.save_btn.pack(side='right', padx=(0, 8))
 
             ttk.Separator(self.root, orient='horizontal').pack(side='top', fill='x')
+
+            # pasek komunikatu o wsadzie (pojawia się przy wielu plikach)
+            hint = ttk.Frame(self.root, padding=(12, 5))
+            hint.pack(side='top', fill='x')
+            self.batch_info_lbl = ttk.Label(hint, textvariable=self.batch_info,
+                                            font=('Segoe UI', 10, 'bold'))
+            self.batch_info_lbl.pack(side='left')
 
             # główny podział: lewy panel + podgląd
             body = ttk.Frame(self.root)
@@ -990,7 +1014,34 @@ def run_gui():
             self.file_combo.current(0)
             self.batch_btn.config(state='normal' if len(self.files) > 1 else 'disabled')
             self.last_dir = os.path.dirname(paths[0]) or self.last_dir
+            self._refresh_batch_hint()
             self.load_current()
+
+        def _refresh_batch_hint(self):
+            """Po wczytaniu wielu plików sprawdza, czy mają jednakowe wymiary,
+            i ustawia komunikat: można wsadem albo trzeba pojedynczo."""
+            if len(self.files) < 2:
+                self.batch_info.set("")
+                return
+            try:
+                pdf_dpi = int(self._pf(self.pdf_dpi.get(), DEFAULT_PDF_DPI))
+                sizes = [probe_size_cm(p, pdf_dpi) for p in self.files]
+            except Exception:
+                self.batch_info.set("")
+                return
+            ref = sizes[0]
+            same = all(abs(s[0] - ref[0]) <= 0.2 and abs(s[1] - ref[1]) <= 0.2 for s in sizes)
+            if same:
+                self.batch_info.set(
+                    f"✓ Wymiary plików te same ({ref[0]:.0f}×{ref[1]:.0f} cm) — "
+                    f"można zapisać jako wsad (wszystkie na raz).")
+                self.batch_info_lbl.config(foreground='#2f8f5b')
+                self.batch_btn.config(state='normal')
+            else:
+                self.batch_info.set(
+                    "⚠ Wymiary plików różne — proszę zapisywać osobno!")
+                self.batch_info_lbl.config(foreground='#c9891a')
+                self.batch_btn.config(state='disabled')
 
         def on_file_selected(self, event):
             idx = self.file_combo.current()
